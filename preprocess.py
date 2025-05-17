@@ -159,42 +159,42 @@ def create_period_splits(data, time_slots, num_tickers, seq_splits_length, lag, 
         period_end = period_start + (seq_splits_length * num_tickers)
         period_slice = data.iloc[period_start : period_end].to_numpy()
 
-    # Standardize the period slice for each ticker
-    y_mean = []
-    y_std = []
-    for ticker_index in range(num_tickers):
-        ticker_rows = period_slice[ticker_index::num_tickers, :]
-        mean = np.mean(ticker_rows, axis=0)
-        std = np.std(ticker_rows, axis=0)
-        period_slice[ticker_index::num_tickers, :] = (ticker_rows - mean) / std
-        y_mean.append(mean[target_cols_locs])
-        y_std.append(std[target_cols_locs])
+        # Standardize the period slice for each ticker
+        y_mean = []
+        y_std = []
+        for ticker_index in range(num_tickers):
+            ticker_rows = period_slice[ticker_index::num_tickers, :]
+            mean = np.mean(ticker_rows, axis=0)
+            std = np.std(ticker_rows, axis=0)
+            period_slice[ticker_index::num_tickers, :] = (ticker_rows - mean) / std
+            y_mean.append(mean[target_cols_locs])
+            y_std.append(std[target_cols_locs])
 
-    # Create sequences for model input (lag for features, lead for targets)
-    Xs = [] # Input sequences
-    Ts = [] # Timestamps
-    Ys = [] # Target sequences
-    for i in range(0, period_slice.shape[0] - (lag + lead) * num_tickers + 1, num_tickers):
-        sequence = period_slice[i : i + (lag + lead) * num_tickers]
-        # Reshape to (lag+lead, num_tickers, num_features)
-        sequence_grouped = sequence.reshape((lag + lead, num_tickers, sequence.shape[1]))
-        Xs.append(sequence_grouped[:lag])
-        Ts.append(time_slots[period_start + i])  # Timestamp
-        Ys.append(sequence_grouped[lag:lag + lead, :, target_cols_locs])
+        # Create sequences for model input (lag for features, lead for targets)
+        Xs = [] # Input sequences
+        Ts = [] # Timestamps
+        Ys = [] # Target sequences
+        for i in range(0, period_slice.shape[0] - (lag + lead) * num_tickers + 1, num_tickers):
+            sequence = period_slice[i : i + (lag + lead) * num_tickers]
+            # Reshape to (lag+lead, num_tickers, num_features)
+            sequence_grouped = sequence.reshape((lag + lead, num_tickers, sequence.shape[1]))
+            Xs.append(sequence_grouped[:lag])
+            Ts.append(time_slots[period_start + i])  # Timestamp
+            Ys.append(sequence_grouped[lag:lag + lead, :, target_cols_locs])
 
-    # Organize the data into a dictionary
-    len_Xs = len(Xs)
-    training_size = int(len_Xs * 0.75)
-    val_test_size = int(len_Xs * 0.125)
-    # Split into training, validation, and test sets
-    period_splits[curr_period] = {
-        'training': { 'X': Xs[:training_size], 'Y': Ys[:training_size], 'Ts': Ts[:training_size] },
-        'validation': { 'X': Xs[training_size:training_size + val_test_size], 'Y': Ys[training_size:training_size + val_test_size], 'Ts': Ts[training_size:training_size + val_test_size] },
-        'test': { 'X': Xs[training_size + val_test_size:], 'Y': Ys[training_size + val_test_size:], 'Ts': Ts[training_size + val_test_size:] },
-        'mean': y_mean,
-        'std': y_std
-    }
-    
+        # Organize the data into a dictionary
+        len_Xs = len(Xs)
+        training_size = int(len_Xs * 0.75)
+        val_test_size = int(len_Xs * 0.125)
+        # Split into training, validation, and test sets
+        period_splits[curr_period] = {
+            'training': { 'X': Xs[:training_size], 'Y': Ys[:training_size], 'Ts': Ts[:training_size] },
+            'validation': { 'X': Xs[training_size:training_size + val_test_size], 'Y': Ys[training_size:training_size + val_test_size], 'Ts': Ts[training_size:training_size + val_test_size] },
+            'test': { 'X': Xs[training_size + val_test_size:], 'Y': Ys[training_size + val_test_size:], 'Ts': Ts[training_size + val_test_size:] },
+            'mean': y_mean,
+            'std': y_std
+        }
+        
     return period_splits
 
 def save_data(data, filename):
@@ -209,14 +209,16 @@ def save_data(data, filename):
         pickle.dump(data, f)
 
 if __name__ == "__main__":
-    # Download stock data for multiple tickers with daily intervals
-    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-
-    # Read the HTML table into a DataFrame
-    table = pd.read_html(url)[0]
-
-    # Extract the list of tickers from the 'Symbol' column
-    tickers = table['Symbol'].tolist()
+    
+    ## Download stock data for multiple tickers with daily intervals
+    #url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+    #
+    ## Read the HTML table into a DataFrame
+    #table = pd.read_html(url)[0]
+#
+    ## Extract the list of tickers from the 'Symbol' column
+    #tickers = table['Symbol'].tolist()
+    tickers = ['AAPL', 'MSFT']
 
     # Download and clean the data
     data, tickers = fetch_and_clean(tickers)
