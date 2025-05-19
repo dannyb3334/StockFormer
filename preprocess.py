@@ -116,22 +116,19 @@ def create_price_volume_features(data, tickers):
             data['Industry'],
             data['Market_Cap']
         )
-
-    # Copy dates for later use
-    time_slots = data['Date'].astype('int64') // 10**9
     # Drop unnecessary columns
-    data.drop(columns=['Industry', 'Market_Cap', 'Close', 'High', 'Low', 'Open', 'Volume', 'Vwap', 'Date', 'Ticker'], inplace=True)
+    data.drop(columns=['Industry', 'Market_Cap', 'Close', 'High', 'Low', 'Open', 'Volume', 'Vwap', 'Ticker'], inplace=True)
 
-    return data, time_slots
+    return data
 
-def create_period_splits(data, time_slots, num_tickers, seq_splits_length, lag, lead):
+def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag, lead):
     """
     Create period splits for training, validation, and test sets.
     Args:
         data (pd.DataFrame): DataFrame containing stock data.
-        time_slots (pd.Series): Series of time slots.
         num_tickers (int): Number of tickers.
         seq_splits_length (int): Length of each sequence split.
+        period_step (int): Step size for each period.
         lag (int): Number of lagged time steps.
         lead (int): Number of lead time steps.
     Returns:
@@ -139,61 +136,64 @@ def create_period_splits(data, time_slots, num_tickers, seq_splits_length, lag, 
     """
     # Get locations of target columns
     target_cols_locs = np.asarray([data.columns.get_loc('Y_RETURN_RATE'), data.columns.get_loc('Y_TREND_DIRECTION')])
+    # Remove date column from standardization
+    date = data['Date'].astype('int64') // 10**9
+    date = date.to_numpy()
+    data.drop(columns=['Date'], inplace=True)
     # Set sequence split parameters
-    period_stats = pd.DataFrame()
+    data = data.to_numpy()
 
-    # Calculate rolling period statistics for each ticker
-    for ticker_index in range(num_tickers):
-        rolling_periods = data.iloc[ticker_index::num_tickers].rolling(window=seq_splits_length)
-        # Compute rolling mean and std for each period
-        rolling_period_means = rolling_periods.mean()[seq_splits_length-1::81].reset_index(drop=True)
-        rolling_period_stds = rolling_periods.std()[seq_splits_length-1::81].reset_index(drop=True)
-        period_stats[ticker_index] = {'mean': rolling_period_means, 'std': rolling_period_stds}
-
-    num_periods = len(period_stats[0]['mean'])
-    curr_period = 0
+    # Create period splits
+    period_start = 0
+    period_count = 0
     period_splits = {}
-    for curr_period in range(num_periods):
-        # Calculate start and end indices for current period
-        period_start = 81 * curr_period * num_tickers
-        period_end = period_start + (seq_splits_length * num_tickers)
-        period_slice = data.iloc[period_start : period_end].to_numpy()
-
-        # Standardize the period slice for each ticker
-        y_mean = []
-        y_std = []
+    period_step = period_step * num_tickers
+    seq_splits_length = seq_splits_length * num_tickers
+    for period_end in range(seq_splits_length, len(data), period_step):
+        # Create a slice for the current period
+        period_slice = data[period_start:period_end].copy()
+        date_slice = date[period_start:period_end][::num_tickers]
+        ticker_target_stats = {}
         for ticker_index in range(num_tickers):
-            ticker_rows = period_slice[ticker_index::num_tickers, :]
-            mean = np.mean(ticker_rows, axis=0)
-            std = np.std(ticker_rows, axis=0)
-            period_slice[ticker_index::num_tickers, :] = (ticker_rows - mean) / std
-            y_mean.append(mean[target_cols_locs])
-            y_std.append(std[target_cols_locs])
+            # Standardize tickers separately 
+            ticker_rows = period_slice[ticker_index::num_tickers]
+            mean = np.mean(ticker_rows)
+            std = np.std(ticker_rows)
+            period_slice[ticker_index::num_tickers] = (ticker_rows - mean) / std
+            ticker_target_stats[ticker_index] = {'mean': mean, 'std': std}
+            ticker_target_stats[ticker_index] = {'mean': mean, 'std': std}
 
         # Create sequences for model input (lag for features, lead for targets)
         Xs = [] # Input sequences
         Ts = [] # Timestamps
         Ys = [] # Target sequences
-        for i in range(0, period_slice.shape[0] - (lag + lead) * num_tickers + 1, num_tickers):
-            sequence = period_slice[i : i + (lag + lead) * num_tickers]
-            # Reshape to (lag+lead, num_tickers, num_features)
-            sequence_grouped = sequence.reshape((lag + lead, num_tickers, sequence.shape[1]))
-            Xs.append(sequence_grouped[:lag])
-            Ts.append(time_slots[period_start + i])  # Timestamp
-            Ys.append(sequence_grouped[lag:lag + lead, :, target_cols_locs])
+
+        # Group every num_tickers rows into arrays
+        grouped_by_date = period_slice.reshape(-1, num_tickers, period_slice.shape[1])
+        for i in range(len(grouped_by_date) - lag - lead):
+            Xs.append(grouped_by_date[i:i + lag])
+            Ys.append(grouped_by_date[i + lag:i + lag + lead, :, target_cols_locs])
+            Ts.append(date_slice[i:i + lag])  # timestamp for the last lag day
+
+        # Convert lists to numpy arrays
+        Xs = np.asarray(Xs)
+        Ts = np.asarray(Ts)
+        Ys = np.asarray(Ys)
 
         # Organize the data into a dictionary
         len_Xs = len(Xs)
         training_size = int(len_Xs * 0.75)
         val_test_size = int(len_Xs * 0.125)
         # Split into training, validation, and test sets
-        period_splits[curr_period] = {
+        period_splits[period_count] = {
             'training': { 'X': Xs[:training_size], 'Y': Ys[:training_size], 'Ts': Ts[:training_size] },
             'validation': { 'X': Xs[training_size:training_size + val_test_size], 'Y': Ys[training_size:training_size + val_test_size], 'Ts': Ts[training_size:training_size + val_test_size] },
             'test': { 'X': Xs[training_size + val_test_size:], 'Y': Ys[training_size + val_test_size:], 'Ts': Ts[training_size + val_test_size:] },
-            'mean': y_mean,
-            'std': y_std
+            'target_standardization': ticker_target_stats
         }
+
+        period_count += 1
+        period_start += period_step
         
     return period_splits
 
@@ -224,14 +224,15 @@ if __name__ == "__main__":
     data, tickers = fetch_and_clean(tickers)
 
     # Create price and volume features
-    data, time_slots = create_price_volume_features(data, tickers)
+    data = create_price_volume_features(data, tickers)
     num_tickers = len(tickers)
 
     # Create period splits for training, validation, and test sets
     seq_splits_length = 486+81+81
+    period_step = 81
     lag = 20
     lead = 2
-    period_splits = create_period_splits(data, time_slots, num_tickers, seq_splits_length, lag, lead)
+    period_splits = create_period_splits(data, num_tickers, seq_splits_length, period_step, lag, lead)
 
     # Save the period_splits dictionary to a file
     save_data(period_splits, 'period_splits.pkl')
