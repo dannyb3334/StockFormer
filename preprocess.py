@@ -50,15 +50,14 @@ def fetch_and_clean(tickers):
 
     return data, tickers
 
-def create_price_volume_features(data, tickers):
+def create_features(data, tickers):
     """
-    Create price and volume features for the given tickers.
+    Create price, volume, and time features for the given tickers.
     Args:
         data (pd.DataFrame): DataFrame containing stock data.
         tickers (list): List of stock tickers.
     Returns:
         pd.DataFrame: DataFrame with new features.
-        pd.Series: Series of time slots.
     """
     num_tickers = len(tickers)
     # Create feature columns for each ticker
@@ -118,7 +117,21 @@ def create_price_volume_features(data, tickers):
         )
     # Drop unnecessary columns
     data.drop(columns=['Industry', 'Market_Cap', 'Close', 'High', 'Low', 'Open', 'Volume', 'Vwap', 'Ticker'], inplace=True)
-
+    
+    # Create time slots
+    time_slots = data['Date'][::num_tickers]
+    time_slots = time_slots.reset_index(drop=True)
+    offset = time_slots.iloc[:252]
+    # Find the index of the date closest to the start of the year
+    first_day_of_year = pd.to_datetime([f"{d.year}-01-01" for d in offset])
+    diffs = (offset - first_day_of_year).abs()
+    closest_idx = diffs.idxmin()
+    time_slots = ((time_slots.index + (252 - closest_idx)) % (252)).astype(int)
+    # Replace 'Date' column with time slots
+    data.drop(columns=['Date'], inplace=True)
+    data['Time_Slot'] = np.repeat(time_slots.values, num_tickers)
+    print(data)
+    
     return data
 
 def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag, lead):
@@ -136,23 +149,22 @@ def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag,
     """
     # Get locations of target columns
     target_cols_locs = np.asarray([data.columns.get_loc('Y_RETURN_RATE'), data.columns.get_loc('Y_TREND_DIRECTION')])
-    # Remove date column from standardization
-    date = data['Date'].astype('int64') // 10**9
-    date = date.to_numpy()
-    data.drop(columns=['Date'], inplace=True)
-    # Set sequence split parameters
-    data = data.to_numpy()
+    # Remove Time_Slot column from standardization
+    time_slot = data['Time_Slot']
+    time_slot = time_slot.to_numpy()
+    data.drop(columns=['Time_Slot'], inplace=True)
 
     # Create period splits
     period_start = 0
     period_count = 0
     period_splits = {}
     period_step = period_step * num_tickers
+    
     seq_splits_length = seq_splits_length * num_tickers
     for period_end in range(seq_splits_length, len(data), period_step):
         # Create a slice for the current period
         period_slice = data[period_start:period_end].copy()
-        date_slice = date[period_start:period_end][::num_tickers]
+        date_slice = time_slot[period_start:period_end][::num_tickers]
         ticker_target_stats = {}
         for ticker_index in range(num_tickers):
             # Standardize tickers separately 
@@ -224,7 +236,7 @@ if __name__ == "__main__":
     data, tickers = fetch_and_clean(tickers)
 
     # Create price and volume features
-    data = create_price_volume_features(data, tickers)
+    data = create_features(data, tickers)
     num_tickers = len(tickers)
 
     # Create period splits for training, validation, and test sets
