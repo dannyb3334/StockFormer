@@ -1,5 +1,6 @@
 ## Implementation of "Stockformer: A Price-Volume Factor Stock Selection Model Based on Wavelet Transform and Multi-Task Self-Attention Networks"
-**This project is a work in progress**
+
+This repository is still under development and may contain bugs or incomplete features. It is intended for research purposes and not for production use.
 
 This repository contains an implementation of the paper:
 
@@ -20,3 +21,137 @@ This repository contains an implementation of the paper:
     url={https://arxiv.org/abs/2401.06139}
 }
 ```
+
+## Project Structure
+
+### Core Implementation Files
+
+| File | Description | Key Features |
+|------|-------------|--------------|
+| `StockFormer.py` | Main model implementation | Multi-task transformer with price-volume factors, temporal attention, stock-wise attention |
+| `preprocess.py` | Data preprocessing pipeline | Downloads stock data, calculates technical indicators, neutralizes factors, creates time series splits |
+| `train.py` | Model training script | Combines multi-period data, MSE loss optimization, real-time training visualization |
+| `backtest_engine.py` | Backtesting framework | Portfolio simulation, risk management, performance metrics, proper return inverse transformation |
+
+### Generated Output Files
+
+#### Data Files
+- **`processed_data.csv`** - Raw processed stock data with technical indicators
+- **`period_splits.pkl`** - Time series splits with standardization statistics for training/validation/test
+- **`stockformer_model.pth`** - Trained PyTorch model weights
+
+#### Results & Analysis
+- **`backtest_results.png`** - Comprehensive backtesting visualization (4-panel plot)
+- **`backtest_summary.csv`** - Period-by-period performance metrics in CSV format
+
+## Sample Output Files
+
+### Backtest Summary (`backtest_summary.csv`)
+```csv
+period,portfolio_return,baseline_return,alpha,portfolio_sharpe,baseline_sharpe,num_trades
+0,-0.0253,0.1041,-0.1294,-0.609,2.158,22
+1,0.0151,-0.0464,0.0615,0.369,-0.340,74
+2,-0.0099,-0.1960,0.1861,-0.145,-1.468,34
+...
+```
+
+### Backtest Visualization (`backtest_results.png`)
+The generated plot contains four panels:
+1. **Portfolio Value vs Baseline** - Time series comparison across all periods
+2. **Returns by Period** - Bar chart showing portfolio vs baseline performance
+3. **Sharpe Ratios** - Risk-adjusted performance comparison
+4. **Cumulative Performance** - Combined multi-period performance trajectory
+
+### Model Architecture Summary
+```
+StockFormer Model:
+├── Input: (batch_size, seq_len=20, num_stocks=10, num_features=362)
+├── Temporal Attention: Multi-head self-attention across time
+├── Stock Attention: Cross-stock relationship modeling  
+├── Multi-task Output: Returns prediction + Trend classification
+└── Output: (batch_size, num_stocks, 2) [return_pred, trend_pred]
+```
+
+### Usage Pipeline
+
+1. **Data Preprocessing**
+   ```bash
+   python preprocess.py
+   ```
+   - Downloads stock data via yfinance
+   - Creates technical indicators and price-volume factors
+   - Generates period splits with proper standardization
+
+2. **Model Training**
+   ```bash
+   python train.py --epochs 200 --batch_size 2048
+   ```
+   - Trains StockFormer on multi-period data
+   - Real-time loss visualization
+   - Saves best model based on validation loss
+
+3. **Backtesting**
+   ```bash
+   python backtest_engine.py --capital 100000 --cost 0.001
+   ```
+   - Simulates portfolio performance
+   - Generates trading signals from model predictions
+   - Compares against buy-and-hold baseline
+
+## Command Line Options
+
+### Training (`train.py`)
+```bash
+python train.py [OPTIONS]
+  --data          Path to period splits file (default: period_splits.pkl)
+  --epochs        Number of training epochs (default: 200)
+  --batch_size    Training batch size (default: 2048)
+  --device        Device to use: cuda/cpu (auto-detected)
+  --model_path    Path to save/load model (default: stockformer_model.pth)
+```
+
+### Backtesting (`backtest_engine.py`)
+```bash
+python backtest_engine.py [OPTIONS]
+  --data          Path to period splits data (default: period_splits.pkl)
+  --capital       Initial capital in USD (default: 100000)
+  --cost          Transaction cost as decimal (default: 0.001)
+  --output        Output plot filename (default: backtest_results.png)
+```
+
+## Data Pipeline Details
+
+### Preprocessing Steps
+1. **Data Collection**: Downloads OHLCV data for configurable stock universe
+2. **Technical Indicators**: Calculates price-volume factors, moving averages, volatility
+3. **Factor Neutralization**: Adjusts for industry and market cap effects
+4. **Standardization**: Z-score normalization with period-specific statistics
+5. **Time Series Splits**: Creates overlapping periods for training/validation/test
+
+### Generated Features (362 total)
+- **Qlib Alpha360**: 360 technical indicators
+- **Trend Direction**: 1 feature (up/down trend classification)
+- **Returns**: 1 feature (future returns prediction)
+
+## Performance Metrics
+
+The backtesting engine produces comprehensive performance analysis including:
+
+- **Portfolio vs Baseline Returns** - Period-by-period comparison
+- **Sharpe Ratios** - Risk-adjusted performance metrics  
+- **Alpha Generation** - Excess returns over baseline
+- **Trade Analysis** - Number of trades, win rate, volatility
+- **Risk Management** - Position sizing, exposure limits, transaction costs
+
+## Key Features
+
+- **Multi-Task Learning**: Simultaneous regression (returns) and classification (trend direction)
+- **Temporal Attention**: Captures time dependencies in stock price movements
+- **Stock-Wise Attention**: Models inter-stock relationships and correlations
+- **Factor Neutralization**: Industry and market-cap adjusted factors
+- **Realistic Backtesting**: Includes transaction costs, position sizing and exposure limits
+
+### Data Requirements
+- Stock universe should have consistent trading history
+- Minimum 2+ years of daily data (recommended)
+- Handle stock delistings and splits appropriately

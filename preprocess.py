@@ -26,7 +26,7 @@ def fetch_and_clean(tickers):
     """
     Fetch and clean stock data for the given tickers.
     """
-    data = yf.download(tickers, interval='1d', start='2018-01-01', end='2024-03-30') # Example date range
+    data = yf.download(tickers, interval='1d', start='2019-01-01', end='2025-03-30', auto_adjust=True) # Example date range
 
     # Change second level columns to their tickers index for easier processing
     data.columns = pd.MultiIndex.from_tuples(
@@ -101,7 +101,7 @@ def create_features(data, tickers):
         data = pd.concat([data, pd.concat({(col, ticker_index): new_features[col] for col in new_features.columns}, axis=1)], axis=1)
 
     # Move ticker index to a column and flatten columns to single level
-    data = data.stack(level=1).reset_index().rename(columns={'level_1': 'Ticker'})
+    data = data.stack(level=1, future_stack=True).reset_index().rename(columns={'level_1': 'Ticker'})
     data.columns.name = None
     # Remove initial rows with insufficient lagged data
     data = data.iloc[num_tickers * 60:]
@@ -122,15 +122,16 @@ def create_features(data, tickers):
     time_slots = data['Date'][::num_tickers]
     time_slots = time_slots.reset_index(drop=True)
     offset = time_slots.iloc[:252]
+
     # Find the index of the date closest to the start of the year
     first_day_of_year = pd.to_datetime([f"{d.year}-01-01" for d in offset])
     diffs = (offset - first_day_of_year).abs()
     closest_idx = diffs.idxmin()
     time_slots = ((time_slots.index + (252 - closest_idx)) % (252)).astype(int)
+
     # Replace 'Date' column with time slots
-    data.drop(columns=['Date'], inplace=True)
+    data = data.drop(columns=['Date']).copy()
     data['Time_Slot'] = np.repeat(time_slots.values, num_tickers)
-    print(data)
     
     return data
 
@@ -158,9 +159,9 @@ def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag,
     period_start = 0
     period_count = 0
     period_splits = {}
-    period_step = period_step * num_tickers
-    
-    seq_splits_length = seq_splits_length * num_tickers
+    period_step *= num_tickers
+
+    seq_splits_length *= num_tickers
     for period_end in range(seq_splits_length, len(data), period_step):
         # Create a slice for the current period
         period_slice = data[period_start:period_end].copy()
@@ -168,11 +169,13 @@ def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag,
         ticker_target_stats = {}
         for ticker_index in range(num_tickers):
             # Standardize tickers separately 
-            ticker_rows = period_slice[ticker_index::num_tickers]
-            mean = np.mean(ticker_rows)
-            std = np.std(ticker_rows)
-            period_slice[ticker_index::num_tickers] = (ticker_rows - mean) / std
-            ticker_target_stats[ticker_index] = {'mean': mean, 'std': std}
+            ticker_rows = period_slice.iloc[ticker_index::num_tickers]
+            mean = ticker_rows.mean(axis=0)
+            std = ticker_rows.std(axis=0)
+            standardized_rows = (ticker_rows - mean) / (std + 1e-8)  # Add small epsilon to avoid division by zero
+            
+            # Ensure proper dtype compatibility and assignment
+            period_slice.iloc[ticker_index::num_tickers] = standardized_rows.astype(period_slice.dtypes)
             ticker_target_stats[ticker_index] = {'mean': mean, 'std': std}
 
         # Create sequences for model input (lag for features, lead for targets)
@@ -181,7 +184,8 @@ def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag,
         Ys = [] # Target sequences
 
         # Group every num_tickers rows into arrays
-        grouped_by_date = period_slice.reshape(-1, num_tickers, period_slice.shape[1])
+        period_slice_values = period_slice.values  # Convert to numpy array
+        grouped_by_date = period_slice_values.reshape(-1, num_tickers, period_slice.shape[1])
         for i in range(len(grouped_by_date) - lag - lead):
             Xs.append(grouped_by_date[i:i + lag])
             Ys.append(grouped_by_date[i + lag:i + lag + lead, :, target_cols_locs])
@@ -196,6 +200,7 @@ def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag,
         len_Xs = len(Xs)
         training_size = int(len_Xs * 0.75)
         val_test_size = int(len_Xs * 0.125)
+
         # Split into training, validation, and test sets
         period_splits[period_count] = {
             'training': { 'X': Xs[:training_size], 'Y': Ys[:training_size], 'Ts': Ts[:training_size] },
@@ -222,15 +227,8 @@ def save_data(data, filename):
 
 if __name__ == "__main__":
     
-    ## Download stock data for multiple tickers with daily intervals
-    #url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-    #
-    ## Read the HTML table into a DataFrame
-    #table = pd.read_html(url)[0]
-#
-    ## Extract the list of tickers from the 'Symbol' column
-    #tickers = table['Symbol'].tolist()
-    tickers = ['AAPL', 'MSFT']
+    # Define the tickers to process (CSI 300, NASDAQ 100, S&P 500, etc.)
+    tickers = ['NVDA', 'META'] # Example tickers, replace with actual list
 
     # Download and clean the data
     data, tickers = fetch_and_clean(tickers)
@@ -246,5 +244,12 @@ if __name__ == "__main__":
     lead = 2
     period_splits = create_period_splits(data, num_tickers, seq_splits_length, period_step, lag, lead)
 
+    # Print summary    
+    print(f"Preprocessing completed successfully!")
+    print(f"Processed {num_tickers} tickers: {tickers}")
+    print(f"Created {len(period_splits)} period splits")
+    print(f"Saved data to 'period_splits.pkl'")
+
     # Save the period_splits dictionary to a file
     save_data(period_splits, 'period_splits.pkl')
+    del data, period_splits # Clean up memory

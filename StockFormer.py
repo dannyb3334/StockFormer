@@ -3,6 +3,7 @@ import pywt
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.stats import spearmanr
+import numpy as np
 import math
 
 class DecouplingFlowLayer(nn.Module):
@@ -55,8 +56,8 @@ class DecouplingFlowLayer(nn.Module):
         X_h_up = torch.stack(X_h_up, dim=0)  # (batch_size*num_stocks, seq_len)
 
         # Reshape back to (batch_size, seq_len, num_stocks)
-        X_l = X_l_up.view(batch_size, num_stocks, seq_len).permute(0, 2, 1)  # (batch_size, seq_len, num_stocks)
-        X_h = X_h_up.view(batch_size, num_stocks, seq_len).permute(0, 2, 1)  # (batch_size, seq_len, num_stocks)
+        X_l = X_l_up.reshape(batch_size, num_stocks, seq_len).permute(0, 2, 1)  # (batch_size, seq_len, num_stocks)
+        X_h = X_h_up.reshape(batch_size, num_stocks, seq_len).permute(0, 2, 1)  # (batch_size, seq_len, num_stocks)
 
         # Replace return feature in original input
         X_l_full = x.clone()
@@ -65,12 +66,60 @@ class DecouplingFlowLayer(nn.Module):
         X_h_full[:, :, :, self.return_index] = X_h  # (batch_size, seq_len, num_stocks, num_features)
 
         # Project to d_model dimensions
-        X_l_proj = self.Wg(X_l_full.view(-1, num_features)).view(batch_size, seq_len, num_stocks, self.d_model)
-        X_h_proj = self.Wh(X_h_full.view(-1, num_features)).view(batch_size, seq_len, num_stocks, self.d_model)
+        X_l_proj = self.Wg(X_l_full.reshape(-1, num_features)).reshape(batch_size, seq_len, num_stocks, self.d_model)
+        X_h_proj = self.Wh(X_h_full.reshape(-1, num_features)).reshape(batch_size, seq_len, num_stocks, self.d_model)
 
         return X_l_proj, X_h_proj  # Both: (batch_size, seq_len, num_stocks, d_model)
 
-class GraphAttentionLayer(nn.Module): pass
+class GraphAttentionLayer(nn.Module):
+    def __init__(self, d_model, num_heads=4):
+        super(GraphAttentionLayer, self).__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
+        
+        self.query = nn.Linear(d_model, d_model)
+        self.key = nn.Linear(d_model, d_model)
+        self.value = nn.Linear(d_model, d_model)
+        self.out = nn.Linear(d_model, d_model)
+        
+        self.ln = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model)
+        )
+        
+    def forward(self, x):
+        # x: (batch_size, seq_len, num_stocks, d_model)
+        batch_size, seq_len, num_stocks, d_model = x.shape
+        
+        # Flatten for multi-head attention
+        x_flat = x.reshape(batch_size * seq_len, num_stocks, d_model)
+        
+        Q = self.query(x_flat).reshape(batch_size * seq_len, num_stocks, self.num_heads, self.head_dim).transpose(1, 2)
+        K = self.key(x_flat).reshape(batch_size * seq_len, num_stocks, self.num_heads, self.head_dim).transpose(1, 2)
+        V = self.value(x_flat).reshape(batch_size * seq_len, num_stocks, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        # Attention computation
+        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_output = torch.matmul(attn_weights, V)
+        
+        # Concatenate heads
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size * seq_len, num_stocks, d_model)
+        output = self.out(attn_output)
+        
+        # Reshape back
+        output = output.reshape(batch_size, seq_len, num_stocks, d_model)
+        
+        # Residual connection and layer norm
+        output = self.ln(output + x)
+        
+        # Feed forward
+        output = self.ff(output) + output
+        
+        return output
 class DualFrequencyEncoder(nn.Module):
     def __init__(self, seq_len, d_model, num_stocks, num_heads):
         super(DualFrequencyEncoder, self).__init__()
@@ -105,17 +154,51 @@ class DualFrequencyEncoder(nn.Module):
 
     def embed_time_slots(self, ts_index):
         # ts_index: (batch_size, seq_len), values in [0, 251]
+        ts_index = ts_index.long()  # Ensure integer type for one_hot
         one_hot = F.one_hot(ts_index, num_classes=self.num_time_slots).float()  # (batch, seq, 252)
         time_embed = self.time_embedding(one_hot)  # (batch, seq, d_model)
         return time_embed  # (batch, seq, d_model)
 
     def embed_spatial(self, returns):
         # returns: (batch_size, seq_len, num_stocks)
-        pass
+        # Compute Spearman correlation matrix and use as spatial embedding
+        batch_size, seq_len, num_stocks = returns.shape
         
-    def compute_spearman_adj(self, returns):
-        # returns: (batch_size, seq_len, num_stocks)
-        pass
+        # Compute correlation for each sample in the batch
+        spatial_embeddings = []
+        for b in range(batch_size):
+            corr_matrix = self.compute_spearman_correlation(returns[b])  # (num_stocks, num_stocks)
+            # Convert correlation matrix to spatial embedding
+            spatial_emb = torch.matmul(corr_matrix, self.spatial_embedding)  # (num_stocks, d_model)
+            spatial_embeddings.append(spatial_emb)
+        
+        spatial_embeddings = torch.stack(spatial_embeddings, dim=0)  # (batch_size, num_stocks, d_model)
+        spatial_embeddings = spatial_embeddings.unsqueeze(1).repeat(1, seq_len, 1, 1)  # (batch_size, seq_len, num_stocks, d_model)
+        
+        return spatial_embeddings
+        
+    def compute_spearman_correlation(self, returns):
+        # returns: (seq_len, num_stocks)
+        seq_len, num_stocks = returns.shape
+        
+        # Convert to numpy for spearman correlation calculation
+        returns_np = returns.detach().cpu().numpy()
+        
+        # Compute spearman correlation matrix
+        try:
+            corr_matrix = np.zeros((num_stocks, num_stocks))
+            for i in range(num_stocks):
+                for j in range(num_stocks):
+                    if i == j:
+                        corr_matrix[i, j] = 1.0
+                    else:
+                        corr, _ = spearmanr(returns_np[:, i], returns_np[:, j])
+                        corr_matrix[i, j] = corr if not np.isnan(corr) else 0.0
+        except:
+            # Fallback to identity matrix if correlation computation fails
+            corr_matrix = np.eye(num_stocks)
+        
+        return torch.tensor(corr_matrix, dtype=returns.dtype, device=returns.device)
        
 
     def forward(self, X_l, X_h, ts_index, returns):
@@ -125,16 +208,16 @@ class DualFrequencyEncoder(nn.Module):
         batch_size, seq_len, num_stocks, d_model = X_l.shape
 
         # Temporal Attention on low-frequency
-        X_l_flat = X_l.view(batch_size * num_stocks, seq_len, d_model)
+        X_l_flat = X_l.reshape(batch_size * num_stocks, seq_len, d_model)
         X_tatt, _ = self.temporal_attention(X_l_flat, X_l_flat, X_l_flat)  # (batch_size*num_stocks, seq_len, d_model)
-        X_tatt = X_tatt.view(batch_size, seq_len, num_stocks, d_model)
+        X_tatt = X_tatt.reshape(batch_size, seq_len, num_stocks, d_model)
 
         # Dilated Conv on high-frequency
         X_h_perm = X_h.permute(0, 2, 3, 1)  # (batch_size, num_stocks, d_model, seq_len)
         X_h_flat = X_h_perm.reshape(batch_size * num_stocks, d_model, seq_len)
         X_conv = self.dilated_conv(X_h_flat)  # (batch_size*num_stocks, d_model, seq_len)
         X_conv = self.relu(X_conv)
-        X_conv = X_conv.view(batch_size, num_stocks, d_model, seq_len).permute(0, 3, 1, 2)  # (batch_size, seq_len, num_stocks, d_model)
+        X_conv = X_conv.reshape(batch_size, num_stocks, d_model, seq_len).permute(0, 3, 1, 2)  # (batch_size, seq_len, num_stocks, d_model)
         
         # Temporal Graph Embedding
         p_tem = self.embed_time_slots(ts_index)  # (batch, seq, d_model)
@@ -142,8 +225,7 @@ class DualFrequencyEncoder(nn.Module):
 
         # Spatial Embedding
         p_spa = self.embed_spatial(returns)  # (batch, seq, num_stocks, d_model)
-        p_spa = p_spa.unsqueeze(0).repeat(batch_size, 1, 1, 1)
-
+        
         # Combine embeddings
         X_l = X_tatt + p_tem + p_spa
         X_h = X_conv + p_tem + p_spa
@@ -187,8 +269,8 @@ class DualFrequencyFusionDecoder(nn.Module):
         batch_size, seq_len, num_stocks, d_model = X_l_gat.shape
 
         # Flatten for processing
-        Y_l = X_l_gat.view(batch_size * num_stocks, seq_len, d_model)
-        Y_h = X_h_gat.view(batch_size * num_stocks, seq_len, d_model)
+        Y_l = X_l_gat.reshape(batch_size * num_stocks, seq_len, d_model)
+        Y_h = X_h_gat.reshape(batch_size * num_stocks, seq_len, d_model)
 
         # Predictors
         pred_l = self.predictor_l(Y_l)  # (batch_size*num_stocks, seq_len, d_model)
@@ -204,11 +286,11 @@ class DualFrequencyFusionDecoder(nn.Module):
         output = attn_self_out + attn_cross_out  # (batch_size*num_stocks, seq_len, d_model)
 
         # Low-frequency outputs
-        Y_l_reg = self.reg_low(pred_l).view(batch_size, seq_len, num_stocks)  # (batch_size, seq_len, num_stocks)
-        Y_l_cla = F.softmax(self.cla_low(pred_l), dim=-1).view(batch_size, seq_len, num_stocks, 2)  # (batch_size, seq_len, num_stocks, 2)
+        Y_l_reg = self.reg_low(pred_l).reshape(batch_size, seq_len, num_stocks)  # (batch_size, seq_len, num_stocks)
+        Y_l_cla = F.softmax(self.cla_low(pred_l), dim=-1).reshape(batch_size, seq_len, num_stocks, 2)  # (batch_size, seq_len, num_stocks, 2)
 
         # Fused outputs
-        fused = output.view(batch_size, seq_len, num_stocks, d_model)
+        fused = output.reshape(batch_size, seq_len, num_stocks, d_model)
         Y_reg = self.reg_fused(fused).squeeze(-1)  # (batch_size, seq_len, num_stocks)
         Y_cla = F.softmax(self.cla_fused(fused), dim=-1)  # (batch_size, seq_len, num_stocks, 2)
 
@@ -223,7 +305,7 @@ class StockFormer(nn.Module):
     """
     StockFormer model for time series forecasting.
     """
-    def __init__(self, num_stocks, seq_len, num_features, d_model=64, num_heads=4, pred_features=[0, 1]):
+    def __init__(self, num_stocks, seq_len=20, num_features=362, d_model=64, num_heads=4, pred_features=[0, 1]):
         super(StockFormer, self).__init__()
         self.num_stocks = num_stocks
         self.num_features = num_features
@@ -232,21 +314,25 @@ class StockFormer(nn.Module):
         self.d_model = d_model
 
         # Wavelet-based decoupling layer
-        self.decouple = DecouplingFlowLayer(d_model=d_model, num_features=num_features,num_heads=num_heads)
+        self.decouple = DecouplingFlowLayer(d_model=d_model, num_features=num_features)
 
         # Dual-frequency spatiotemporal encoder
         self.dual_freq_encoder = DualFrequencyEncoder(seq_len=seq_len, d_model=d_model, num_stocks=num_stocks, num_heads=num_heads)
 
         # Dual-frequency fusion decoder
-        self.dual_freq_fusion_decoder = DualFrequencyFusionDecoder(seq_len, d_model, num_features)
-
+        self.dual_freq_fusion_decoder = DualFrequencyFusionDecoder(seq_len, d_model, num_heads)
 
     def forward(self, x, ts) -> dict:
         # x: (batch_size, seq_len, num_stocks, num_features)
         # ts: (batch_size, seq_len) time slot indices
+        batch_size, seq_len, num_stocks, num_features = x.shape
+        
         # Decompose input into low and high frequency components
         X_l, X_h = self.decouple(x)  # Both: (batch_size, seq_len, num_stocks, d_model)
-        returns = x[..., self.pred_features[1]]  # (batch_size, seq_len, num_stocks)
+        
+        # Extract returns for spatial embedding (assuming return rate is at index 360 in features)
+        # Based on preprocess.py, Y_RETURN_RATE is one of the last features
+        returns = x[..., -2]  # (batch_size, seq_len, num_stocks) - second to last feature should be return rate
 
         # Encode
         X_l_gat, X_h_gat = self.dual_freq_encoder(X_l, X_h, ts, returns)
@@ -255,3 +341,19 @@ class StockFormer(nn.Module):
         predictions = self.dual_freq_fusion_decoder(X_l_gat, X_h_gat)
 
         return predictions
+    
+    def predict(self, x, ts):
+        """
+        Simplified prediction interface for training script compatibility
+        Returns concatenated regression and classification outputs
+        """
+        predictions = self.forward(x, ts)
+        
+        # Get the last time step predictions
+        reg_output = predictions["reg"][:, -1, :]  # (batch_size, num_stocks)
+        cla_output = predictions["cla"][:, -1, :, 1]  # (batch_size, num_stocks) - probability of positive class
+        
+        # Concatenate regression and classification outputs
+        output = torch.stack([reg_output, cla_output], dim=-1)  # (batch_size, num_stocks, 2)
+        
+        return output
