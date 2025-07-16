@@ -27,7 +27,7 @@ class StockFormerBacktester:
         self.num_features = None
         self.seq_len = None
         self.pred_len = None
-        self.hidden_dim = 64  # Default hidden dimension for StockFormer
+        self.hidden_dim = 128  # Default hidden dimension for StockFormer
             
     def load_data(self, data_file='period_splits.pkl'):
         """Load and initialize model based on data dimensions.
@@ -71,7 +71,7 @@ class StockFormerBacktester:
         print(f"-- Prediction horizon: {self.pred_len}")
         
         # Initialize model
-        self.model = StockFormer(num_stocks=3).to(self.device)
+        self.model = StockFormer(num_stocks=10).to(self.device)
         
         return self.period_splits
 
@@ -94,22 +94,17 @@ class StockFormerBacktester:
             out = self.model(X_tensor, Ts_tensor)
 
             reg_pred = out["cla"][:, 1, :].cpu().numpy() # (time, num_stocks)
-            cla_pred = out["reg"][:, 1, :].cpu().numpy().argmax(axis=-1) # (time, num_stocks)
+            cla_pred = out["reg"][:, 1, :].cpu().numpy() # (time, num_stocks)
 
             # Flatten predictions for thresholding
             reg_pred_flat = reg_pred.flatten()
             cla_pred_flat = cla_pred.flatten()
-            print(reg_pred_flat)
-            print(cla_pred_flat)
 
             # Set batch thresholds for buy/sell signals
             reg_buy_threshold = np.percentile(reg_pred_flat, 80)
             reg_sell_threshold = np.percentile(reg_pred_flat, 20)
             cla_buy_threshold = np.percentile(cla_pred_flat, 70)
             cla_sell_threshold = np.percentile(cla_pred_flat, 30)
-
-            print(reg_buy_threshold, reg_sell_threshold, cla_buy_threshold, cla_sell_threshold)
-            exit()
             
             # Generate signals based on both regression and classification predictions
             signals = np.zeros_like(reg_pred)
