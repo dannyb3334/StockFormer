@@ -26,18 +26,51 @@ def fetch_and_clean(tickers):
     """
     Fetch and clean stock data for the given tickers.
     """
-    data = yf.download(tickers, interval='1d', start='2019-01-01', end='2025-03-30', auto_adjust=True) # Example date range
+    try:
+        data = yf.download(tickers, interval='1d', start='2019-01-01', end='2025-03-30', auto_adjust=True) # Example date range
+    except Exception as e:
+        print(f"Error downloading data: {e}")
+        return pd.DataFrame(), []
+
+    # Handle case where no data is returned
+    if data.empty:
+        print("No data downloaded for any tickers")
+        return pd.DataFrame(), []
 
     # Change second level columns to their tickers index for easier processing
     data.columns = pd.MultiIndex.from_tuples(
         [(_, tickers.index(ticker)) for _, ticker in data.columns]
     )
 
-    # Remove tickers with missing data
-    for ticker_index, ticker in enumerate(tickers[:]):
-        if data[('Open', ticker_index)].isna().any():
-            tickers.remove(ticker)
-            data = data.drop(ticker, axis=1, level=1)
+    # Identify tickers with missing data
+    valid_tickers = []
+    valid_ticker_indices = []
+    
+    for ticker_index, ticker in enumerate(tickers):
+        try:
+            if not data[('Open', ticker_index)].isna().any():
+                valid_tickers.append(ticker)
+                valid_ticker_indices.append(ticker_index)
+            else:
+                print(f"Removing ticker {ticker} due to missing data")
+        except KeyError:
+            print(f"Removing ticker {ticker} - not found in downloaded data")
+    
+    # Keep only valid tickers and reindex columns
+    if valid_ticker_indices:
+        # Create new data with only valid tickers and sequential indices using pd.concat
+        columns_to_concat = {}
+        for new_idx, old_idx in enumerate(valid_ticker_indices):
+            for col_name in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                if (col_name, old_idx) in data.columns:
+                    columns_to_concat[(col_name, new_idx)] = data[(col_name, old_idx)]
+        
+        # Use pd.concat for better performance
+        data = pd.concat(columns_to_concat, axis=1)
+        tickers = valid_tickers
+    else:
+        print("No valid tickers found")
+        return pd.DataFrame(), []
 
     # Clean the data by removing outliers (values more than 3 std from mean)
     for col in data.columns:
@@ -228,8 +261,8 @@ def save_data(data, filename):
 if __name__ == "__main__":
     
     # Define the tickers to process (CSI 300, NASDAQ 100, S&P 500, etc.)
-    tickers = ['NVDA', 'META'] # Example tickers, replace with actual list
-
+    tickers = ['AAPL', 'MSFT'] # Example tickers
+    print(" ".join(tickers))
     # Download and clean the data
     data, tickers = fetch_and_clean(tickers)
 
@@ -252,6 +285,6 @@ if __name__ == "__main__":
 
     # Save the period_splits dictionary to a file
     save_data(period_splits, 'period_splits.pkl')
-    data.to_csv('processed_data.csv', index=False)
+    #data.to_csv('processed_data.csv', index=False)
 
     del data, period_splits # Clean up memory
