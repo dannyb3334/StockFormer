@@ -261,7 +261,7 @@ def save_data(data, filename):
 if __name__ == "__main__":
     
     # Define the tickers to process (CSI 300, NASDAQ 100, S&P 500, etc.)
-    tickers = ['AAPL', 'MSFT'] # Example tickers
+    tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'ADBE', 'INTC', 'AMD'] # Top 10 tech tickers
     print(" ".join(tickers))
     # Download and clean the data
     data, tickers = fetch_and_clean(tickers)
