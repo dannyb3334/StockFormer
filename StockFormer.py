@@ -121,7 +121,7 @@ class GraphAttentionLayer(nn.Module):
         
         return output
 class DualFrequencyEncoder(nn.Module):
-    def __init__(self, seq_len, d_model, num_stocks, num_heads):
+    def __init__(self, seq_len, d_model, num_stocks, num_heads, kernel_size=2):
         super(DualFrequencyEncoder, self).__init__()
         self.seq_len = seq_len
         self.d_model = d_model
@@ -130,16 +130,16 @@ class DualFrequencyEncoder(nn.Module):
         # Temporal attention for low-frequency components
         self.temporal_attention = nn.MultiheadAttention(embed_dim=d_model, num_heads=num_heads, batch_first=True)
         # Dilated convolution with padding to preserve sequence length
-        self.dilated_conv = nn.Conv1d(in_channels=d_model, out_channels=d_model, kernel_size=3, dilation=2, padding=2)
+        self.dilated_conv = nn.Conv1d(in_channels=d_model, out_channels=d_model, kernel_size=kernel_size, dilation=2, padding=1)
         self.relu = nn.ReLU()
 
         # Positional encoding
-        position = torch.arange(seq_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        position = torch.arange(seq_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe = torch.zeros(seq_len, d_model)
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('positional_encoding', pe)
+        self.register_buffer('positional_encoding', pe.unsqueeze(0))
 
         # Time embedding
         self.num_time_slots = 252
@@ -196,6 +196,7 @@ class DualFrequencyEncoder(nn.Module):
                         corr_matrix[i, j] = corr if not np.isnan(corr) else 0.0
         except:
             # Fallback to identity matrix if correlation computation fails
+            print("Spearman correlation computation failed, using identity matrix.")
             corr_matrix = np.eye(num_stocks)
         
         return torch.tensor(corr_matrix, dtype=returns.dtype, device=returns.device)
@@ -237,19 +238,20 @@ class DualFrequencyEncoder(nn.Module):
         return X_l_gat, X_h_gat
 
 class DualFrequencyFusionDecoder(nn.Module):
-    def __init__(self, seq_len, d_model, num_heads):
+    def __init__(self, seq_len, pred_len, d_model, num_heads):
         super(DualFrequencyFusionDecoder, self).__init__()
         self.seq_len = seq_len
+        self.pred_len = pred_len
         self.d_model = d_model
 
         # Predictors
-        self.predictor_l = nn.Linear(d_model, d_model)
-        self.predictor_h = nn.Linear(d_model, d_model)
+        self.predictor_l = nn.Conv2d(self.seq_len, self.pred_len, (1,1))
+        self.predictor_h = nn.Conv2d(self.seq_len, self.pred_len, (1,1))
 
         # Positional encoding
-        position = torch.arange(seq_len).unsqueeze(1)
+        position = torch.arange(pred_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(seq_len, d_model)
+        pe = torch.zeros(pred_len, d_model)
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer('positional_encoding', pe.unsqueeze(0))
@@ -259,59 +261,60 @@ class DualFrequencyFusionDecoder(nn.Module):
         self.attn_cross = nn.MultiheadAttention(d_model, num_heads=num_heads, batch_first=True)
 
         # Output layers
-        self.reg_low = nn.Linear(d_model, 1)
-        self.cla_low = nn.Linear(d_model, 2)
-        self.reg_fused = nn.Linear(d_model, 1)
-        self.cla_fused = nn.Linear(d_model, 2)
+        self.fc_reg= nn.Linear(d_model, 1)
+        self.fc_cla = nn.Linear(d_model, 1)
 
     def forward(self, X_l_gat, X_h_gat) -> dict:
         # X_l_gat, X_h_gat: (batch_size, seq_len, num_stocks, d_model)
-        batch_size, seq_len, num_stocks, d_model = X_l_gat.shape
-
-        # Flatten for processing
-        Y_l = X_l_gat.reshape(batch_size * num_stocks, seq_len, d_model)
-        Y_h = X_h_gat.reshape(batch_size * num_stocks, seq_len, d_model)
+        batch_size, pred_len, num_stocks, d_model = X_l_gat.shape
 
         # Predictors
-        pred_l = self.predictor_l(Y_l)  # (batch_size*num_stocks, seq_len, d_model)
-        pred_h = self.predictor_h(Y_h)  # (batch_size*num_stocks, seq_len, d_model)
+        pred_l = self.predictor_l(X_l_gat)  # (batch_size, pred_len, num_stocks, d_model)
+        pred_h = self.predictor_h(X_h_gat)  # (batch_size, pred_len, num_stocks, d_model)
 
-        # Add positional encoding
-        input_l = pred_l + self.positional_encoding[:, :seq_len, :]
-        input_h = pred_h + self.positional_encoding[:, :seq_len, :]
+        batch_size, pred_len, num_stocks, d_model = pred_l.shape
+
+        pred_l = pred_l.reshape(batch_size * num_stocks, pred_len, d_model)
+        pred_h = pred_h.reshape(batch_size * num_stocks, pred_len, d_model)
+
+        # Add positional encoding - remove the slicing since positional_encoding already has pred_len dimensions
+        input_l = pred_l + self.positional_encoding  # (batch_size*num_stocks, pred_len, d_model)
+        input_h = pred_h + self.positional_encoding  # (batch_size*num_stocks, pred_len, d_model)
 
         # Fusion Attention
         attn_self_out, _ = self.attn_self(input_l, input_l, input_l)
         attn_cross_out, _ = self.attn_cross(input_l, input_h, input_h)
-        output = attn_self_out + attn_cross_out  # (batch_size*num_stocks, seq_len, d_model)
+        output = attn_self_out + attn_cross_out  # (batch_size*num_stocks, pred_len, d_model)
 
         # Low-frequency outputs
-        Y_l_reg = self.reg_low(pred_l).reshape(batch_size, seq_len, num_stocks)  # (batch_size, seq_len, num_stocks)
-        Y_l_cla = F.softmax(self.cla_low(pred_l), dim=-1).reshape(batch_size, seq_len, num_stocks, 2)  # (batch_size, seq_len, num_stocks, 2)
-
+        Y_l_reg = self.fc_reg(pred_l).reshape(batch_size, pred_len, num_stocks)  # (batch_size, pred_len, num_stocks)
+        Y_l_cla = self.fc_cla(pred_l).reshape(batch_size, pred_len, num_stocks)  # (batch_size, pred_len, num_stocks)
         # Fused outputs
-        fused = output.reshape(batch_size, seq_len, num_stocks, d_model)
-        Y_reg = self.reg_fused(fused).squeeze(-1)  # (batch_size, seq_len, num_stocks)
-        Y_cla = F.softmax(self.cla_fused(fused), dim=-1)  # (batch_size, seq_len, num_stocks, 2)
+        Y_reg = self.fc_reg(output).reshape(batch_size, pred_len, num_stocks)  # (batch_size, pred_len, num_stocks)
+        Y_cla = self.fc_cla(output).reshape(batch_size, pred_len, num_stocks)  # (batch_size, pred_len, num_stocks)
 
         return {
+            "lreg": Y_l_reg,
+            "lcla": Y_l_cla,
             "reg": Y_reg,
             "cla": Y_cla,
-            "lreg": Y_l_reg,
-            "lcla": Y_l_cla
         }
 
 class StockFormer(nn.Module):
     """
     StockFormer model for time series forecasting.
     """
-    def __init__(self, num_stocks, seq_len=20, num_features=362, d_model=64, num_heads=4, pred_features=[0, 1]):
+    def __init__(self, num_stocks, seq_len=20, pred_len=2, num_features=362, d_model=128, num_heads=1, pred_features=[0, 1]):
         super(StockFormer, self).__init__()
         self.num_stocks = num_stocks
         self.num_features = num_features
         self.pred_features = pred_features
         self.seq_len = seq_len
+        self.pred_len = pred_len
         self.d_model = d_model
+
+        # Dropout layer
+        self.dropout = nn.Dropout(p=0.2)
 
         # Wavelet-based decoupling layer
         self.decouple = DecouplingFlowLayer(d_model=d_model, num_features=num_features)
@@ -320,40 +323,29 @@ class StockFormer(nn.Module):
         self.dual_freq_encoder = DualFrequencyEncoder(seq_len=seq_len, d_model=d_model, num_stocks=num_stocks, num_heads=num_heads)
 
         # Dual-frequency fusion decoder
-        self.dual_freq_fusion_decoder = DualFrequencyFusionDecoder(seq_len, d_model, num_heads)
+        self.dual_freq_fusion_decoder = DualFrequencyFusionDecoder(seq_len=seq_len, pred_len=pred_len, d_model=d_model, num_heads=num_heads)
 
     def forward(self, x, ts) -> dict:
         # x: (batch_size, seq_len, num_stocks, num_features)
         # ts: (batch_size, seq_len) time slot indices
-        batch_size, seq_len, num_stocks, num_features = x.shape
         
         # Decompose input into low and high frequency components
         X_l, X_h = self.decouple(x)  # Both: (batch_size, seq_len, num_stocks, d_model)
         
-        # Extract returns for spatial embedding (assuming return rate is at index 360 in features)
-        # Based on preprocess.py, Y_RETURN_RATE is one of the last features
-        returns = x[..., -2]  # (batch_size, seq_len, num_stocks) - second to last feature should be return rate
+        # Apply dropout to the decomposed features
+        X_l = self.dropout(X_l)
+        X_h = self.dropout(X_h)
+
+        returns = x[..., self.pred_features[0]]  # (batch_size, seq_len, num_stocks)
 
         # Encode
         X_l_gat, X_h_gat = self.dual_freq_encoder(X_l, X_h, ts, returns)
+
+        # Apply dropout to encoded features
+        X_l_gat = self.dropout(X_l_gat)
+        X_h_gat = self.dropout(X_h_gat)
 
         # Decode
         predictions = self.dual_freq_fusion_decoder(X_l_gat, X_h_gat)
 
         return predictions
-    
-    def predict(self, x, ts):
-        """
-        Simplified prediction interface for training script compatibility
-        Returns concatenated regression and classification outputs
-        """
-        predictions = self.forward(x, ts)
-        
-        # Get the last time step predictions
-        reg_output = predictions["reg"][:, -1, :]  # (batch_size, num_stocks)
-        cla_output = predictions["cla"][:, -1, :, 1]  # (batch_size, num_stocks) - probability of positive class
-        
-        # Concatenate regression and classification outputs
-        output = torch.stack([reg_output, cla_output], dim=-1)  # (batch_size, num_stocks, 2)
-        
-        return output

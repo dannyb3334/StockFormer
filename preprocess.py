@@ -238,7 +238,7 @@ if __name__ == "__main__":
     num_tickers = len(tickers)
 
     # Create period splits for training, validation, and test sets
-    seq_splits_length = 486+81+81
+    seq_splits_length = 486+81+81 
     period_step = 81
     lag = 20
     lead = 2
@@ -252,4 +252,6 @@ if __name__ == "__main__":
 
     # Save the period_splits dictionary to a file
     save_data(period_splits, 'period_splits.pkl')
+    data.to_csv('processed_data.csv', index=False)
+
     del data, period_splits # Clean up memory

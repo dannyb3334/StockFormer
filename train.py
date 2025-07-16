@@ -6,10 +6,8 @@ from StockFormer import StockFormer
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-import threading
-import time
-import os
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
 
 def inverse_transform(y, mean, std):
     # y: (batch, lead, num_stocks, num_targets)
@@ -36,8 +34,29 @@ def combine_all_periods(period_splits):
         'X_train': all_X_train, 'Y_train': all_Y_train, 'Ts_train': all_Ts_train,
         'X_val': all_X_val, 'Y_val': all_Y_val, 'Ts_val': all_Ts_val
     }
+class MultiSupervisionLoss(nn.Module):
+    def __init__(self, lambda_weight=1.0):
+        super().__init__()
+        self.weight = lambda_weight
+        self.MAE_loss = nn.L1Loss()
+        self.CE_loss = nn.CrossEntropyLoss()
 
-def train_model(combined_data, model, optimizer, criterion, device, model_path='stockformer_model.pth', num_epochs=200, batch_size=2048):
+    def forward(self, Y_l_reg, Y_l_cla, Y_reg, Y_cla, y_true_reg, y_true_cla):
+        # Compute losses
+
+        # MAE loss for regression
+        reg_loss = self.MAE_loss(Y_l_reg, y_true_reg) + \
+                   self.MAE_loss(Y_reg, y_true_reg)
+
+        # Cross-entropy loss for classification - ensure targets are Long type
+        cla_loss = self.CE_loss(Y_l_cla, y_true_cla) + \
+                   self.CE_loss(Y_cla, y_true_cla)
+        # Combine losses
+        total_loss = reg_loss + self.weight * cla_loss
+
+        return total_loss
+
+def train_model(combined_data, model, optimizer, criterion, scheduler, device, num_epochs, batch_size, model_path='stockformer_model.pth'):
     """Train model on combined dataset"""
     # Convert to numpy arrays first
     X_train = np.array(combined_data['X_train'])
@@ -97,21 +116,36 @@ def train_model(combined_data, model, optimizer, criterion, device, model_path='
             
             # Convert batch to tensors
             x_batch = torch.tensor(X_train_shuffled[i:end_idx], dtype=torch.float32).to(device)
-            y_batch = torch.tensor(Y_train_shuffled[i:end_idx], dtype=torch.float32).to(device)
-            ts_batch = torch.tensor(Ts_train_shuffled[i:end_idx], dtype=torch.long).to(device)
+            y_reg_batch = torch.tensor(Y_train_shuffled[i:end_idx][..., 0], dtype=torch.float32).to(device)
+            y_cla_batch = torch.tensor(Y_train_shuffled[i:end_idx][..., 1], dtype=torch.long).to(device)
+            ts_batch = torch.tensor(Ts_train_shuffled[i:end_idx], dtype=torch.float32).to(device)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad() # Large Batch Size
             
             # Forward pass
-            out = model.predict(x_batch, ts_batch)  # (batch, num_stocks, 2)
-            y_true = y_batch[:, 0, :, :].view(out.shape)  # (batch, num_stocks, 2)
+            out = model(x_batch, ts_batch)
+
+            cla_pred = out["cla"].reshape(-1, 2)       # [N, 2]
+            lcla_pred = out["lcla"].reshape(-1, 2)     # [N, 2]
+            y_true_cla = y_cla_batch.view(-1, 2).argmax(dim=1)
+
+            loss = criterion(
+                out["lreg"].view(-1),
+                lcla_pred,
+                out["reg"].view(-1),
+                cla_pred,
+                y_reg_batch.view(-1),
+                y_true_cla
+            )
             
-            loss = criterion(out, y_true)
+            # Backward pass
             loss.backward()
-            
-            # Gradient clipping
-            nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+
+            # Add gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+
             optimizer.step()
+            scheduler.step((i + epoch) * (train_size // batch_size))  # Step scheduler with current batch index
             
             epoch_loss += loss.item()
             num_batches += 1
@@ -129,12 +163,26 @@ def train_model(combined_data, model, optimizer, criterion, device, model_path='
                 end_idx = min(val_size, i + batch_size)
                 
                 x_batch = torch.tensor(X_val[i:end_idx], dtype=torch.float32).to(device)
-                y_batch = torch.tensor(Y_val[i:end_idx], dtype=torch.float32).to(device)
-                ts_batch = torch.tensor(Ts_val[i:end_idx], dtype=torch.long).to(device)
+                y_reg_batch = torch.tensor(Y_val[i:end_idx][..., 0], dtype=torch.float32).to(device)
+                y_cla_batch = torch.tensor(Y_val[i:end_idx][..., 1], dtype=torch.long).to(device)
+                ts_batch = torch.tensor(Ts_val[i:end_idx], dtype=torch.float32).to(device)
                 
-                out = model.predict(x_batch, ts_batch)
-                y_true = y_batch[:, 0, :, :].view(out.shape)
-                val_loss += criterion(out, y_true).item()
+                out = model(x_batch, ts_batch)
+                
+                cla_pred = out["cla"].reshape(-1, 2)       # [N, 2]
+                lcla_pred = out["lcla"].reshape(-1, 2)     # [N, 2]
+                y_true_cla = y_cla_batch.view(-1, 2).argmax(dim=1)
+                
+                loss = criterion(
+                    out["lreg"].view(-1),
+                    lcla_pred,
+                    out["reg"].view(-1),
+                    cla_pred,
+                    y_reg_batch.view(-1),
+                    y_true_cla
+                )
+                
+                val_loss += loss.item()
                 val_batches += 1
             
             if val_batches > 0:
@@ -159,17 +207,15 @@ def train_model(combined_data, model, optimizer, criterion, device, model_path='
                 train_losses.append(avg_loss)
                 val_losses.append(float('nan'))  # Use NaN for missing validation loss
                 update_plot()
-    
-    # Keep the plot open at the end
+
     plt.ioff()
-    plt.show()
-    print("Training completed! Close the plot window to continue.")
+    plt.close(fig)
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default='period_splits.pkl', help='Pickle file with period splits')
-    parser.add_argument('--epochs', type=int, default=200) # StockFormer default is 200 epochs
-    parser.add_argument('--batch_size', type=int, default=2048) # StockFormer default is 2048
+    parser.add_argument('--epochs', type=int, default=100) # StockFormer default is 100 epochs
+    parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--model_path', type=str, default='stockformer_model.pth', help='Path to save/load model')
     args = parser.parse_args()
@@ -187,8 +233,9 @@ def main():
 
     model = StockFormer(num_stocks=num_stocks, num_features=num_features).to(args.device)
     
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)#, weight_decay=0.1) # Default
+    criterion = MultiSupervisionLoss(1.0)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
 
     print(f"Starting training on {len(period_splits)} periods...")
     print(f"Using device: {args.device}")
@@ -198,11 +245,11 @@ def main():
     print(f"Combined all periods into single dataset")
     
     # Train on combined dataset
-    train_model(combined_data, model, optimizer, criterion, args.device, args.model_path, num_epochs=args.epochs, batch_size=args.batch_size)
-    
+    train_model(combined_data, model, optimizer, criterion, scheduler, args.device, args.epochs, args.batch_size, args.model_path)
+
     # Save final model
     torch.save(model.state_dict(), args.model_path)
     print(f"\nTraining completed! Final model saved to '{args.model_path}'")
-    print(f"Ready for backtesting with: python backtest_engine.py")
+
 if __name__ == "__main__":
     main()

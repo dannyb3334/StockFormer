@@ -71,12 +71,7 @@ class StockFormerBacktester:
         print(f"-- Prediction horizon: {self.pred_len}")
         
         # Initialize model
-        self.model = StockFormer(
-            num_stocks=self.num_stocks,
-            seq_len=self.seq_len,
-            num_features=self.num_features,
-            d_model=self.hidden_dim
-        ).to(self.device)
+        self.model = StockFormer(num_stocks=3).to(self.device)
         
         return self.period_splits
 
@@ -95,22 +90,26 @@ class StockFormerBacktester:
         with torch.inference_mode():
             # Format input tensors
             X_tensor = torch.FloatTensor(X_test).to(self.device)
-            Ts_tensor = torch.LongTensor(Ts_test).to(self.device)
-            predictions = self.model.predict(X_tensor, Ts_tensor)
-            
-            # Format predictions
-            reg_pred = predictions[:, :, 0].cpu().numpy()  # (batch, num_stocks) - return predictions
-            cla_pred = predictions[:, :, 1].cpu().numpy()  # (batch, num_stocks) - trend predictions
-            
-            # Reshape to (time, stocks) 
+            Ts_tensor = torch.FloatTensor(Ts_test).to(self.device)
+            out = self.model(X_tensor, Ts_tensor)
+
+            reg_pred = out["cla"][:, 1, :].cpu().numpy() # (time, num_stocks)
+            cla_pred = out["reg"][:, 1, :].cpu().numpy().argmax(axis=-1) # (time, num_stocks)
+
+            # Flatten predictions for thresholding
             reg_pred_flat = reg_pred.flatten()
             cla_pred_flat = cla_pred.flatten()
-            
-            # Set thresholds for buy/sell signals
+            print(reg_pred_flat)
+            print(cla_pred_flat)
+
+            # Set batch thresholds for buy/sell signals
             reg_buy_threshold = np.percentile(reg_pred_flat, 80)
             reg_sell_threshold = np.percentile(reg_pred_flat, 20)
             cla_buy_threshold = np.percentile(cla_pred_flat, 70)
             cla_sell_threshold = np.percentile(cla_pred_flat, 30)
+
+            print(reg_buy_threshold, reg_sell_threshold, cla_buy_threshold, cla_sell_threshold)
+            exit()
             
             # Generate signals based on both regression and classification predictions
             signals = np.zeros_like(reg_pred)
