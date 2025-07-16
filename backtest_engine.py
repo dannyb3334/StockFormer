@@ -382,14 +382,18 @@ class StockFormerBacktester:
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
         fig.suptitle('StockFormer Backtest Results', fontsize=16, fontweight='bold')
         
+        # Define colors for each period
+        colors = plt.cm.Set1(np.linspace(0, 1, len(results)))
+        
         # Portfolio vs Baseline Value Over Time
         ax1 = axes[0, 0]
         for i, result in enumerate(results):
+            color = colors[i]
             time_steps = range(len(result['portfolio_values']))
             ax1.plot(time_steps, result['portfolio_values'], 
-                    label=f"Portfolio P{result['period']}", alpha=0.8, linewidth=2)
+                    label=f"Portfolio P{result['period']}", alpha=0.8, linewidth=2, color=color)
             ax1.plot(time_steps, result['baseline_values'], 
-                    label=f"Baseline P{result['period']}", alpha=0.6, linestyle='--')
+                    label=f"Baseline P{result['period']}", alpha=0.6, linestyle='--', color=color)
         
         ax1.set_title('Portfolio Value vs Baseline')
         ax1.set_xlabel('Time Steps')
@@ -451,10 +455,10 @@ class StockFormerBacktester:
                 
                 all_portfolio_values.extend([v * scale_p for v in result['portfolio_values'][1:]])
                 all_baseline_values.extend([v * scale_b for v in result['baseline_values'][1:]])
-        
+    
         time_steps = range(len(all_portfolio_values))
         ax4.plot(time_steps, all_portfolio_values, label='Portfolio', linewidth=2, color='blue')
-        ax4.plot(time_steps, all_baseline_values, label='Baseline (Buy & Hold)', linewidth=2, color='orange')
+        ax4.plot(time_steps, all_baseline_values, label='Baseline (Buy & Hold)', linewidth=2, color='blue', linestyle='--')
         
         ax4.set_title('Cumulative Performance')
         ax4.set_xlabel('Time Steps (All Periods)')

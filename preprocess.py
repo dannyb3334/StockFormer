@@ -27,7 +27,7 @@ def fetch_and_clean(tickers):
     Fetch and clean stock data for the given tickers.
     """
     try:
-        data = yf.download(tickers, interval='1d', start='2019-01-01', end='2025-03-30', auto_adjust=True) # Example date range
+        data = yf.download(tickers, interval='1d', start='2018-01-01', end='2024-01-01', auto_adjust=True) # Example date range
     except Exception as e:
         print(f"Error downloading data: {e}")
         return pd.DataFrame(), []
@@ -80,7 +80,7 @@ def fetch_and_clean(tickers):
         outliers = (series - mean).abs() > 3 * std
         data.loc[outliers, col] = float('nan')
     data.ffill(inplace=True)  # Forward fill to handle NaN values
-
+    data.bfill(inplace=True)  # Backward fill to handle any remaining NaN values
     return data, tickers
 
 def create_features(data, tickers):
@@ -117,9 +117,9 @@ def create_features(data, tickers):
 
         # Generate lagged features for each column (Open, High, Low, Close, Volume, Vwap) for 60 days
         cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Vwap']
+
         for i in range(1, 61):
             for col in cols:
-                col_name = f'{col.upper()}{i}'
                 if col == 'Volume':
                     # Lagged volume feature normalized by current volume
                     feature = data[('Volume', ticker_index)].shift(i) / (data[('Volume', ticker_index)] + 1e-12)
