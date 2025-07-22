@@ -28,10 +28,11 @@ This repository contains an implementation of the paper:
 
 | File | Description | Key Features |
 |------|-------------|--------------|
-| `StockFormer.py` | Main model implementation | Multi-task transformer with price-volume factors, temporal attention, stock-wise attention |
-| `preprocess.py` | Data preprocessing pipeline | Downloads stock data, calculates technical indicators, neutralizes factors, creates time series splits |
-| `train.py` | Model training script | Combines multi-period data, MSE loss optimization, real-time training visualization |
-| `backtest_engine.py` | Backtesting framework | Portfolio simulation, risk management, performance metrics, proper return inverse transformation |
+| `StockFormer.py` | Main model implementation | Multi-task transformer with price-volume factors, wavelet-based decoupling, dual-frequency encoder/decoder, temporal and stock-wise attention, signal generation |
+| `preprocess.py` | Data preprocessing pipeline | Downloads stock data, creates price/volume features, neutralizes factors by industry/market cap, standardizes per period, generates time series splits for training/validation/test |
+| `train.py` | Model training script | Multi-task loss (regression + classification), sequential period training with optimizer reset and learning rate decay, early stopping, real-time loss visualization |
+| `backtest_engine.py` | Backtesting framework | Single-period backtest, portfolio simulation, risk metrics, Sharpe ratio, performance summary, cumulative return plotting, strategy vs baseline comparison |
+| `predict_engine.py` | Inference/prediction script | Loads trained model, prepares latest data, generates and prints trading signals for given tickers |
 
 ### Generated Output Files
 
@@ -41,19 +42,13 @@ This repository contains an implementation of the paper:
 - **`stockformer_model.pth`** - Trained PyTorch model weights
 
 #### Results & Analysis
-- **`backtest_results.png`** - Comprehensive backtesting visualization (4-panel plot)
-- **`backtest_summary.csv`** - Period-by-period performance metrics in CSV format
+- **`backtest_period.png`** - Comprehensive backtesting visualization
 
 ## Sample Output Files
 
-### Backtest Summary (`backtest_summary.csv`)
-```csv
-period,portfolio_return,baseline_return,alpha,portfolio_sharpe,baseline_sharpe,num_trades
-0,-0.0253,0.1041,-0.1294,-0.609,2.158,22
-1,0.0151,-0.0464,0.0615,0.369,-0.340,74
-2,-0.0099,-0.1960,0.1861,-0.145,-1.468,34
-...
-```
+### Example Backtest Plot
+
+![Backtest Period Example](backtest_period.png)
 
 ### Backtest Visualization (`backtest_results.png`)
 The generated plot contains four panels:
@@ -65,11 +60,11 @@ The generated plot contains four panels:
 ### Model Architecture Summary
 ```
 StockFormer Model:
-├── Input: (batch_size, seq_len=20, num_stocks=10, num_features=362)
+├── Input: (batch_size, sequence_len=20, num_stocks=10, num_features=362)
 ├── Temporal Attention: Multi-head self-attention across time
 ├── Stock Attention: Cross-stock relationship modeling  
 ├── Multi-task Output: Returns prediction + Trend classification
-└── Output: (batch_size, num_stocks, 2) [return_pred, trend_pred]
+└── Output: (batch_size, prediction_len, num_stocks) [return_pred, trend_pred]   (batch_size, pred_len, num_stocks)
 ```
 
 ### Usage Pipeline

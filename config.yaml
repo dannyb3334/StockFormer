@@ -1,0 +1,30 @@
+# StockFormer training and model configuration
+
+data: period_splits.pkl
+model_path: stockformer_model.pth
+
+train_params:
+  period_len: 648
+  train_split: 0.75
+  val_split: 0.125
+  epochs: 100
+  batch_size: 1024 # Adjusted batch size for larger datasets
+  device: cuda
+  reset_optimizer: true
+  initial_learning_rate: 0.001
+  initial_weight_decay: 0.1
+  cla_loss_weight: 2.0
+
+model_params:
+  trained_period : {"start": "2018-01-01", "end": "2025-01-01"}
+  tickers: ['GOOGL', 'AMZN', 'MSFT'] # Example tickers, adjust as needed
+  min_len_for_pred: 81 # Corresponds to period_len*val_split (The expected standard length for prediction)
+  num_stocks: 3
+  seq_len: 20
+  pred_len: 2
+  num_features: 362
+  d_model: 128
+  num_heads: 2
+  dropout: 0.2
+  pred_features: [0, 1]
+  lookahead: 0

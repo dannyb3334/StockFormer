@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 import pickle
+import argparse
+import yaml
 
 def neutralize_factor(factor_series, industry_series, market_value_series):
     """
@@ -22,12 +24,15 @@ def neutralize_factor(factor_series, industry_series, market_value_series):
     # Return residuals (neutralized factor)
     return y - model.predict(X)
 
-def fetch_and_clean(tickers):
+def fetch_and_clean(tickers, start_date=None, end_date=None, day_range=None):
     """
     Fetch and clean stock data for the given tickers.
     """
     try:
-        data = yf.download(tickers, interval='1d', start='2019-01-01', end='2025-03-30', auto_adjust=True) # Example date range
+        if day_range:
+            data = yf.download(tickers, interval='1d', period=f"{day_range}d", auto_adjust=True)
+        else:
+            data = yf.download(tickers, interval='1d', start=start_date, end=end_date, auto_adjust=True)
     except Exception as e:
         print(f"Error downloading data: {e}")
         return pd.DataFrame(), []
@@ -80,7 +85,7 @@ def fetch_and_clean(tickers):
         outliers = (series - mean).abs() > 3 * std
         data.loc[outliers, col] = float('nan')
     data.ffill(inplace=True)  # Forward fill to handle NaN values
-
+    data.bfill(inplace=True)  # Backward fill to handle any remaining NaN values
     return data, tickers
 
 def create_features(data, tickers):
@@ -110,16 +115,16 @@ def create_features(data, tickers):
                                         data[('Low', ticker_index)].values) / 3 * data[('Volume', ticker_index)].values).cumsum() / \
                                             data[('Volume', ticker_index)].values.cumsum()
         # Calculate interval return rate
-        return_rate = data[('Close', ticker_index)].pct_change().fillna(0)
+        return_rate = data[('Close', ticker_index)].pct_change().shift(-1).fillna(0)
         new_cols['Y_RETURN_RATE'] = return_rate
         # Trend direction: 1 if return > 0 else -1
         new_cols['Y_TREND_DIRECTION'] = np.where(return_rate > 0, 1, -1)
 
         # Generate lagged features for each column (Open, High, Low, Close, Volume, Vwap) for 60 days
         cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Vwap']
-        for i in range(1, 61):
+
+        for i in range(0, 60):
             for col in cols:
-                col_name = f'{col.upper()}{i}'
                 if col == 'Volume':
                     # Lagged volume feature normalized by current volume
                     feature = data[('Volume', ticker_index)].shift(i) / (data[('Volume', ticker_index)] + 1e-12)
@@ -150,7 +155,7 @@ def create_features(data, tickers):
         )
     # Drop unnecessary columns
     data.drop(columns=['Industry', 'Market_Cap', 'Close', 'High', 'Low', 'Open', 'Volume', 'Vwap', 'Ticker'], inplace=True)
-    
+
     # Create time slots
     time_slots = data['Date'][::num_tickers]
     time_slots = time_slots.reset_index(drop=True)
@@ -168,50 +173,101 @@ def create_features(data, tickers):
     
     return data
 
-def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag, lead):
+def create_predict_data(tickers, lag, lead, standard_window):
     """
-    Create period splits for training, validation, and test sets.
-    Args:
-        data (pd.DataFrame): DataFrame containing stock data.
-        num_tickers (int): Number of tickers.
-        seq_splits_length (int): Length of each sequence split.
-        period_step (int): Step size for each period.
-        lag (int): Number of lagged time steps.
-        lead (int): Number of lead time steps.
-    Returns:
-        dict: Dictionary containing period splits.
+    Prepare model input data for prediction using the latest available data.
+    Downloads, cleans, and feature-engineers the data, then standardizes features per ticker.
+    Returns lagged feature sequences and timestamps for prediction.
     """
-    # Get locations of target columns
+    # Download and clean the data
+    data, tickers = fetch_and_clean(tickers, day_range=standard_window)
+
+    # Create price and volume features
+    data = create_features(data, tickers)
+    num_tickers = len(tickers)
+
+    # Get locations of target columns and factor columns
     target_cols_locs = np.asarray([data.columns.get_loc('Y_RETURN_RATE'), data.columns.get_loc('Y_TREND_DIRECTION')])
+    factor_cols_locs = np.asarray([data.columns.get_loc(col) for col in data.columns if str(col).startswith('FEATURE')])
+
     # Remove Time_Slot column from standardization
     time_slot = data['Time_Slot']
     time_slot = time_slot.to_numpy()
     data.drop(columns=['Time_Slot'], inplace=True)
 
-    # Create period splits
+    # Standardize features per ticker
+    data_copy = data.copy()
+    date_slice = time_slot[::num_tickers]
+    for ticker_index in range(num_tickers):
+        # Standardize features for each ticker separately
+        ticker_rows = data_copy.iloc[ticker_index::num_tickers, factor_cols_locs]
+        mean = ticker_rows.mean(axis=0)
+        std = ticker_rows.std(axis=0)
+        standardized_rows = (ticker_rows - mean) / (std + 1e-12)  # Avoid division by zero
+        data_copy.iloc[ticker_index::num_tickers, factor_cols_locs] = standardized_rows
+
+    # Create lagged feature sequences and timestamps for prediction
+    Xs = [] # Input sequences
+    Ts = [] # Timestamps
+
+    # Group every num_tickers rows into arrays
+    period_slice_values = data_copy.values  # Convert to numpy array
+    grouped_by_date = period_slice_values.reshape(-1, num_tickers, data_copy.shape[1])
+    for i in range(len(grouped_by_date) - lag):
+        Xs.append(grouped_by_date[i:i + lag])
+        Ts.append(date_slice[i:i + lag])  # timestamp for the last lag day
+
+    # Convert lists to numpy arrays
+    Xs = np.asarray(Xs)
+    Ts = np.asarray(Ts)
+
+    return Xs, Ts
+
+
+def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag, lead, train_split, val_split):
+    """
+    Create rolling period splits for training, validation, and test sets for time series modeling.
+    Each period is standardized per ticker, then split into lagged feature/target sequences.
+    Args:
+        data (pd.DataFrame): DataFrame containing stock data.
+        num_tickers (int): Number of tickers.
+        seq_splits_length (int): Length of each sequence split (in time steps).
+        period_step (int): Step size for each period (in time steps).
+        lag (int): Number of lagged time steps for model input.
+        lead (int): Number of lead time steps for model target.
+        train_split (float): Fraction of samples for training set.
+        val_split (float): Fraction of samples for validation set.
+    Returns:
+        dict: Dictionary containing period splits with training, validation, and test sets.
+    """
+    # Get locations of target columns and factor columns
+    target_cols_locs = np.asarray([data.columns.get_loc('Y_RETURN_RATE'), data.columns.get_loc('Y_TREND_DIRECTION')])
+    factor_cols_locs = np.asarray([data.columns.get_loc(col) for col in data.columns if str(col).startswith('FEATURE')])
+
+    # Remove Time_Slot column from standardization
+    time_slot = data['Time_Slot']
+    time_slot = time_slot.to_numpy()
+    data.drop(columns=['Time_Slot'], inplace=True)
+
+    # Create rolling period splits
     period_start = 0
     period_count = 0
     period_splits = {}
     period_step *= num_tickers
-
     seq_splits_length *= num_tickers
     for period_end in range(seq_splits_length, len(data), period_step):
         # Create a slice for the current period
         period_slice = data[period_start:period_end].copy()
         date_slice = time_slot[period_start:period_end][::num_tickers]
-        ticker_target_stats = {}
+        # Standardize features for each ticker in the period
         for ticker_index in range(num_tickers):
-            # Standardize tickers separately 
-            ticker_rows = period_slice.iloc[ticker_index::num_tickers]
+            ticker_rows = period_slice.iloc[ticker_index::num_tickers, factor_cols_locs]
             mean = ticker_rows.mean(axis=0)
             std = ticker_rows.std(axis=0)
-            standardized_rows = (ticker_rows - mean) / (std + 1e-8)  # Add small epsilon to avoid division by zero
-            
-            # Ensure proper dtype compatibility and assignment
-            period_slice.iloc[ticker_index::num_tickers] = standardized_rows.astype(period_slice.dtypes)
-            ticker_target_stats[ticker_index] = {'mean': mean, 'std': std}
+            standardized_rows = (ticker_rows - mean) / (std + 1e-12)  # Avoid division by zero
+            period_slice.iloc[ticker_index::num_tickers, factor_cols_locs] = standardized_rows
 
-        # Create sequences for model input (lag for features, lead for targets)
+        # Create lagged feature/target sequences and timestamps for this period
         Xs = [] # Input sequences
         Ts = [] # Timestamps
         Ys = [] # Target sequences
@@ -229,22 +285,19 @@ def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag,
         Ts = np.asarray(Ts)
         Ys = np.asarray(Ys)
 
-        # Organize the data into a dictionary
+        # Organize the data into a dictionary with train/val/test splits
         len_Xs = len(Xs)
-        training_size = int(len_Xs * 0.75)
-        val_test_size = int(len_Xs * 0.125)
+        training_size = int(len_Xs * train_split)
+        val_test_size = int(len_Xs * val_split)
 
-        # Split into training, validation, and test sets
         period_splits[period_count] = {
             'training': { 'X': Xs[:training_size], 'Y': Ys[:training_size], 'Ts': Ts[:training_size] },
             'validation': { 'X': Xs[training_size:training_size + val_test_size], 'Y': Ys[training_size:training_size + val_test_size], 'Ts': Ts[training_size:training_size + val_test_size] },
             'test': { 'X': Xs[training_size + val_test_size:], 'Y': Ys[training_size + val_test_size:], 'Ts': Ts[training_size + val_test_size:] },
-            'target_standardization': ticker_target_stats
         }
 
         period_count += 1
         period_start += period_step
-        
     return period_splits
 
 def save_data(data, filename):
@@ -259,23 +312,34 @@ def save_data(data, filename):
         pickle.dump(data, f)
 
 if __name__ == "__main__":
-    
-    # Define the tickers to process (CSI 300, NASDAQ 100, S&P 500, etc.)
-    tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'ADBE', 'INTC', 'AMD'] # Top 10 tech tickers
+    # Load parameters from YAML file
+    with open('config.yaml', 'r') as f:
+        params = yaml.safe_load(f)
+
+    train_params = params.get('train_params', {})
+    model_params = params.get('model_params', {})
+    tickers = model_params.get('tickers', ['GOOGL', 'AMZN'])  # Example tickers, adjust as needed
+    period_len = train_params.get('period_len')
+    period_step = model_params.get('min_len_for_pred')
+    lag = model_params.get('seq_len')
+    lead = model_params.get('pred_len')
+    train_start_date = model_params.get('trained_period', {}).get('start')
+    train_end_date = model_params.get('trained_period', {}).get('end')
+    train_split = train_params.get('train_split', 0.75)
+    val_split = train_params.get('val_split', 0.125)
+
+    print("Processing training data...")
     print(" ".join(tickers))
+
     # Download and clean the data
-    data, tickers = fetch_and_clean(tickers)
+    data, tickers = fetch_and_clean(tickers, start_date=train_start_date, end_date=train_end_date)
 
     # Create price and volume features
     data = create_features(data, tickers)
     num_tickers = len(tickers)
 
     # Create period splits for training, validation, and test sets
-    seq_splits_length = 486+81+81 
-    period_step = 81
-    lag = 20
-    lead = 2
-    period_splits = create_period_splits(data, num_tickers, seq_splits_length, period_step, lag, lead)
+    period_splits = create_period_splits(data, num_tickers, period_len, period_step, lag, lead, train_split, val_split)
 
     # Print summary    
     print(f"Preprocessing completed successfully!")
@@ -285,6 +349,6 @@ if __name__ == "__main__":
 
     # Save the period_splits dictionary to a file
     save_data(period_splits, 'period_splits.pkl')
-    #data.to_csv('processed_data.csv', index=False)
+    data.to_csv('processed_data.csv', index=False)
 
     del data, period_splits # Clean up memory
