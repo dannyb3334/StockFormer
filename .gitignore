@@ -3,10 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.pkl
-
 *.csv
 # C extensions
 *.so
+
+stockformer_model.pth
 
 # Distribution / packaging
 .Python

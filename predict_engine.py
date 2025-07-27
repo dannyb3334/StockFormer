@@ -1,7 +1,7 @@
 
 import torch
 import yaml
-from StockFormer import StockFormer, output_to_signals
+from StockFormer import create_compiled_stockformer, output_to_signals
 from preprocess import create_predict_data
 
 class StockFormerPredictor:
@@ -35,7 +35,7 @@ class StockFormerPredictor:
         """
         Initialize the StockFormer model and load weights from checkpoint.
         """
-        self.model = StockFormer(**self.model_params).to(self.device)
+        self.model = create_compiled_stockformer(self.device, **self.model_params)
         checkpoint = torch.load(self.model_path, map_location=self.device)
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             self.model.load_state_dict(checkpoint['model_state_dict'])

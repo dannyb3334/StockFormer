@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import pickle
-from StockFormer import StockFormer
+from StockFormer import create_compiled_stockformer
 import numpy as np
 import matplotlib.pyplot as plt
 import yaml
@@ -60,7 +60,7 @@ class MultiSupervisionLoss(nn.Module):
 
 
 def train_period(period_data, model, optimizer, criterion, device, num_epochs, batch_size, 
-                patience, model_path='stockformer_model.pth', scheduler=None):
+                patience, model_path='stockformer_model.pth', scheduler=None, show_plot=True):
     """
     Train model on a single period with early stopping and live loss plotting.
     """
@@ -82,29 +82,30 @@ def train_period(period_data, model, optimizer, criterion, device, num_epochs, b
     best_model_state = None
     
     # Initialize live plotting
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(10, 6))
-    train_losses = []
-    val_losses = []
-    epochs_list = []
+    if show_plot:
+        plt.ion()
+        fig, ax = plt.subplots(figsize=(10, 6))
+        train_losses = []
+        val_losses = []
+        epochs_list = []
+
+        # Set up the plot
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title('Training and Validation Loss')
+        train_line, = ax.plot([], [], 'b-', label='Training Loss', linewidth=2)
+        val_line, = ax.plot([], [], 'r-', label='Validation Loss', linewidth=2)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
     
-    # Set up the plot
-    ax.set_xlabel('Epoch')
-    ax.set_ylabel('Loss')
-    ax.set_title('Training and Validation Loss')
-    train_line, = ax.plot([], [], 'b-', label='Training Loss', linewidth=2)
-    val_line, = ax.plot([], [], 'r-', label='Validation Loss', linewidth=2)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    def update_plot():
-        if epochs_list:
-            train_line.set_data(epochs_list, train_losses)
-            val_line.set_data(epochs_list, val_losses)
-            ax.relim()
-            ax.autoscale_view()
-            plt.draw()
-            plt.pause(0.01)
+        def update_plot():
+            if epochs_list:
+                train_line.set_data(epochs_list, train_losses)
+                val_line.set_data(epochs_list, val_losses)
+                ax.relim()
+                ax.autoscale_view()
+                plt.draw()
+                plt.pause(0.01)
     
     for epoch in range(num_epochs):
         model.train()
@@ -193,11 +194,12 @@ def train_period(period_data, model, optimizer, criterion, device, num_epochs, b
                     patience_counter += 1
                     print(f"No improvement. Patience: {patience_counter}/{patience}")
                 
-                # Update live plot
-                epochs_list.append(epoch + 1)
-                train_losses.append(avg_loss)
-                val_losses.append(val_loss)
-                update_plot()
+                if show_plot:
+                    # Update live plot
+                    epochs_list.append(epoch + 1)
+                    train_losses.append(avg_loss)
+                    val_losses.append(val_loss)
+                    update_plot()
                 
                 # Check for early stopping
                 if patience_counter >= patience:
@@ -205,20 +207,23 @@ def train_period(period_data, model, optimizer, criterion, device, num_epochs, b
                     break
             else:
                 print("No validation batches available - skipping validation")
-                # Still update plot with training loss only
-                epochs_list.append(epoch + 1)
-                train_losses.append(avg_loss)
-                val_losses.append(float('nan'))  # Use NaN for missing validation loss
-                update_plot()
+
+                if show_plot:
+                    # Still update plot with training loss only
+                    epochs_list.append(epoch + 1)
+                    train_losses.append(avg_loss)
+                    val_losses.append(float('nan'))  # Use NaN for missing validation loss
+                    update_plot()
 
     # Load the best model state before finishing
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
         print(f"Loaded best model with validation loss: {best_val_loss:.4f}")
 
-    plt.ioff()
-    plt.close(fig)
-    
+    if show_plot:
+        plt.ioff()
+        plt.close(fig)
+
     return best_val_loss
 
 def train_on_periods(periods_dataset, model, optimizer, criterion, device, num_epochs, batch_size, model_path='stockformer_model.pth', reset_optimizer=True, weight_decay=0.1):
@@ -322,7 +327,7 @@ def main():
 
     print(f"Number of stocks: {num_stocks}, Number of features: {num_features}")
 
-    model = StockFormer(
+    model = create_compiled_stockformer(
         num_stocks=num_stocks,
         num_features=num_features,
         seq_len=seq_len,
@@ -330,8 +335,9 @@ def main():
         d_model=d_model,
         num_heads=num_heads,
         dropout=dropout,
-        pred_features=pred_features
-    ).to(device)
+        pred_features=pred_features,
+        device=device
+    )
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     criterion = MultiSupervisionLoss(cla_loss_weight)

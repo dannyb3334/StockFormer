@@ -5,7 +5,7 @@ import pickle
 import argparse
 import matplotlib.pyplot as plt
 import yaml
-from StockFormer import StockFormer, output_to_raw_numpy, output_to_signals
+from StockFormer import create_compiled_stockformer, output_to_raw_numpy, output_to_signals
 
 
 class StockFormerBacktester:
@@ -19,7 +19,7 @@ class StockFormerBacktester:
         self.num_features = None
         self.seq_len = None
         self.pred_len = None
-        self.hidden_dim = 128  # Default hidden dimension for StockFormer
+        self.hidden_dim = None
         self.model_path = model_path
         self.period_idx = period_idx
         self.lookahead = lookahead
@@ -67,7 +67,7 @@ class StockFormerBacktester:
         print(f"-- Prediction horizon: {self.pred_len}")
         
         # Initialize model with provided parameters
-        self.model = StockFormer(**model_params).to(self.device)
+        self.model = create_compiled_stockformer(**model_params)
 
         return self.period_splits
 

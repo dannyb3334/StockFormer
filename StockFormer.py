@@ -5,6 +5,9 @@ import torch.nn.functional as F
 from scipy.stats import spearmanr
 import numpy as np
 import math
+import torch._dynamo
+
+#torch.set_float32_matmul_precision('high')
 
 def init_weights(module):
     """Randomly initialize weights for neural network modules."""
@@ -204,7 +207,8 @@ class DualFrequencyEncoder(nn.Module):
         spatial_embeddings = spatial_embeddings.unsqueeze(1).repeat(1, seq_len, 1, 1)  # (batch_size, seq_len, num_stocks, d_model)
         
         return spatial_embeddings
-        
+    
+    @torch._dynamo.disable
     def compute_spearman_correlation(self, returns):
         # returns: (seq_len, num_stocks)
         seq_len, num_stocks = returns.shape
@@ -362,6 +366,7 @@ class StockFormer(nn.Module):
         # Initialize weights for the entire model
         self.apply(init_weights)
 
+
     def forward(self, x, ts) -> dict:
         # x: (batch_size, seq_len, num_stocks, num_features)
         # ts: (batch_size, seq_len) time slot indices
@@ -447,3 +452,18 @@ def output_to_signals(out, lookahead=0):
                 else:
                     signals[t, stock] = 0.0
     return signals
+
+def create_compiled_stockformer(device='cuda', **kwargs):
+    """
+    Create and compile a StockFormer model instance with configurable parameters.
+    Args:
+        device (str): Device to run the model on ('cuda' or 'cpu').
+        **kwargs: Additional parameters for StockFormer initialization.
+    Returns:
+        Compiled StockFormer model instance.
+    """
+    torch.set_float32_matmul_precision("high")
+    model = StockFormer(**kwargs)
+    model = torch.compile(model, mode='default')
+    model.to(device)
+    return model
