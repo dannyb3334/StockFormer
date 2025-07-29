@@ -26,50 +26,59 @@ class StockFormerBacktester:
 
         self._load_data(data_path, model_params)
 
-    def _load_data(self, data_file='period_splits.pkl', model_params=None):
+    def _load_data(self, data_path='period_splits.pkl', model_params=None):
         """
         Load period split data, extract data dimensions, and initialize the model.
 
         Args:
-            data_file: Path to the preprocessed data file containing period splits.
+            data_path: Path to the preprocessed data file containing period splits.
             model_params: Parameters for initializing the model.
 
         Returns:
             None. Sets self.period_splits and initializes self.model.
         """
-        with open(data_file, 'rb') as f:
-            self.period_splits = pickle.load(f)
-        
-        if not self.period_splits:
-            raise ValueError("The file is empty or invalid.")
-        
+        # Load period split data
+        with open(data_path, 'rb') as f:
+            data = pickle.load(f)
+
+        self.period_splits = data.get('period_splits')
+        self.tickers = data.get('tickers')
+        self.seq_len = data.get('seq_len')
+        self.pred_len = data.get('pred_len')
+
+        if not self.period_splits or not self.tickers:
+            raise ValueError("Missing period splits or tickers in data file.")
+
+        self.num_stocks = len(self.tickers)
+
+        # Get sample data to infer feature dimensions
         first_period = next(iter(self.period_splits.values()))
-        if 'training' not in first_period or 'X' not in first_period['training']:
-            raise ValueError(f"Expected 'training' -> 'X' but got: {list(first_period.keys())}")
-        
-        sample_X = first_period['training']['X']
-        sample_Y = first_period['training']['Y']
-        
-        if len(sample_X) == 0:
-            raise ValueError("No training data found in the first period.")
-        
-        # Extract data dimensions
-        self.seq_len = sample_X.shape[1]
-        self.num_stocks = sample_X.shape[2]
-        self.num_features = sample_X.shape[3]
-        self.pred_len = sample_Y.shape[1]
+        train_X = first_period.get('training', {}).get('X')
+        train_Y = first_period.get('training', {}).get('Y')
 
-        print(f"Data loaded successfully:")
-        print(f"-- Periods: {len(self.period_splits)}")
-        print(f"-- Sequence length: {self.seq_len}")
-        print(f"-- Number of stocks: {self.num_stocks}")
-        print(f"-- Number of features: {self.num_features}")
-        print(f"-- Prediction horizon: {self.pred_len}")
-        
-        # Initialize model with provided parameters
+        if train_X is None or train_Y is None or len(train_X) == 0:
+            raise ValueError("Training data missing or empty in first period.")
+
+        self.num_features = train_X.shape[3]
+
+        # Sanity checks
+        if train_X.shape[1] != self.seq_len:
+            raise ValueError("Sequence length mismatch between config and data.")
+        if train_Y.shape[1] != self.pred_len:
+            raise ValueError("Prediction length mismatch between config and data.")
+
+        print(f"Data loaded:")
+        print(f"  Periods: {len(self.period_splits)}")
+        print(f"  Sequence length: {self.seq_len}")
+        print(f"  Number of stocks: {self.num_stocks}")
+        print(f"  Number of features: {self.num_features}")
+        print(f"  Prediction horizon: {self.pred_len}")
+
+        # Initialize model
+        if model_params is None:
+            model_params = {}
+        model_params['num_stocks'] = self.num_stocks
         self.model = create_compiled_stockformer(**model_params)
-
-        return self.period_splits
 
     def get_signals(self, X_test, Ts_test):
         """

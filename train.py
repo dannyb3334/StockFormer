@@ -301,29 +301,39 @@ def main():
     model_path = config.get('model_path', 'stockformer_model.pth')
 
     # Training params
-    train_params = config.get('train_params', {})
-    epochs = train_params.get('epochs', 100)
-    batch_size = train_params.get('batch_size', 1024)
-    device = train_params.get('device', 'cuda')
-    reset_optimizer = train_params.get('reset_optimizer', True)
-    learning_rate = train_params.get('initial_learning_rate', 1e-3)
-    weight_decay = train_params.get('initial_weight_decay', 0.1)
-    cla_loss_weight = train_params.get('cla_loss_weight', 3.0)
+    train_params = config.get('train_params')
+    epochs = train_params.get('epochs')
+    batch_size = train_params.get('batch_size')
+    device = train_params.get('device')
+    reset_optimizer = train_params.get('reset_optimizer')
+    learning_rate = train_params.get('initial_learning_rate')
+    weight_decay = train_params.get('initial_weight_decay')
+    cla_loss_weight = train_params.get('cla_loss_weight')
 
     # Model params
-    model_params = config.get('model_params', {})
-    num_stocks = model_params.get('num_stocks', 2)
-    seq_len = model_params.get('seq_len', 20)
-    pred_len = model_params.get('pred_len', 2)
-    num_features = model_params.get('num_features', 362)
-    d_model = model_params.get('d_model', 128)
-    num_heads = model_params.get('num_heads', 2)
-    dropout = model_params.get('dropout', 0.2)
-    pred_features = model_params.get('pred_features', [0, 1])
+    model_params = config.get('model_params')
+    seq_len = model_params.get('seq_len')
+    pred_len = model_params.get('pred_len')
+    num_features = model_params.get('num_features')
+    d_model = model_params.get('d_model')
+    num_heads = model_params.get('num_heads')
+    dropout = model_params.get('dropout')
+    pred_features = model_params.get('pred_features')
 
     # Load data
     with open(data_path, 'rb') as f:
-        period_splits = pickle.load(f)
+        data = pickle.load(f)
+
+    lag = data['seq_len']
+    lead = data['pred_len']
+    # Sanity checks
+    if lag != seq_len:
+        raise ValueError("Sequence length mismatch between config and data.")
+    if lead != pred_len:
+        raise ValueError("Prediction length mismatch between config and data.")
+    period_splits = data['period_splits']
+    tickers = data['tickers']
+    num_stocks = len(tickers)
 
     print(f"Number of stocks: {num_stocks}, Number of features: {num_features}")
 

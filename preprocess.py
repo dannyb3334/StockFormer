@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 import pickle
-import argparse
 import yaml
+from tqdm import tqdm
 
 def neutralize_factor(factor_series, industry_series, market_value_series):
     """
@@ -101,7 +101,7 @@ def create_features(data, tickers):
     # Create feature columns for each ticker
     industry_names = {} # Dictionary to store industry name indices corresponding to their names
     idx_industry_names = 0
-    for ticker_index, ticker in enumerate(tickers):
+    for ticker_index, ticker in enumerate(tqdm(tickers, desc="Feature Engineering")):
         t = yf.Ticker(ticker)
         new_cols = {}
         # Assign industry index if not already present
@@ -147,7 +147,7 @@ def create_features(data, tickers):
 
     # Neutralize all FEATURE columns by industry and market cap
     feature_cols = [col for col in data.columns if str(col).startswith('FEATURE')]
-    for col in feature_cols:
+    for col in tqdm(feature_cols, desc="Neutralizing Features"):
         data[col] = neutralize_factor(
             data[col],
             data['Industry'],
@@ -173,11 +173,19 @@ def create_features(data, tickers):
     
     return data
 
-def create_predict_data(tickers, lag, lead, standard_window):
+def create_predict_data(tickers, lag, standard_window):
     """
     Prepare model input data for prediction using the latest available data.
     Downloads, cleans, and feature-engineers the data, then standardizes features per ticker.
     Returns lagged feature sequences and timestamps for prediction.
+    Args:
+        tickers (list): List of stock tickers.
+        lag (int): Number of lagged time steps for model input.
+        standard_window (int): Number of days to consider for standardization.
+    Returns:
+        tuple: Tuple containing:
+            - Xs (np.ndarray): Input sequences of shape (num_samples, lag, num_tickers, num_features).
+            - Ts (np.ndarray): Timestamps corresponding to the last lag
     """
     # Download and clean the data
     data, tickers = fetch_and_clean(tickers, day_range=standard_window)
@@ -186,8 +194,7 @@ def create_predict_data(tickers, lag, lead, standard_window):
     data = create_features(data, tickers)
     num_tickers = len(tickers)
 
-    # Get locations of target columns and factor columns
-    target_cols_locs = np.asarray([data.columns.get_loc('Y_RETURN_RATE'), data.columns.get_loc('Y_TREND_DIRECTION')])
+    # Get locations of factor columns
     factor_cols_locs = np.asarray([data.columns.get_loc(col) for col in data.columns if str(col).startswith('FEATURE')])
 
     # Remove Time_Slot column from standardization
@@ -224,13 +231,13 @@ def create_predict_data(tickers, lag, lead, standard_window):
     return Xs, Ts
 
 
-def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag, lead, train_split, val_split):
+def create_period_splits(data, tickers, seq_splits_length, period_step, lag, lead, train_split, val_split):
     """
     Create rolling period splits for training, validation, and test sets for time series modeling.
     Each period is standardized per ticker, then split into lagged feature/target sequences.
     Args:
         data (pd.DataFrame): DataFrame containing stock data.
-        num_tickers (int): Number of tickers.
+        tickers (list): List of ticker symbols.
         seq_splits_length (int): Length of each sequence split (in time steps).
         period_step (int): Step size for each period (in time steps).
         lag (int): Number of lagged time steps for model input.
@@ -253,9 +260,11 @@ def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag,
     period_start = 0
     period_count = 0
     period_splits = {}
+    num_tickers = len(tickers)
     period_step *= num_tickers
     seq_splits_length *= num_tickers
-    for period_end in range(seq_splits_length, len(data), period_step):
+
+    for period_end in tqdm(range(seq_splits_length, len(data), period_step), desc="Creating Period Splits"):
         # Create a slice for the current period
         period_slice = data[period_start:period_end].copy()
         date_slice = time_slot[period_start:period_end][::num_tickers]
@@ -298,6 +307,9 @@ def create_period_splits(data, num_tickers, seq_splits_length, period_step, lag,
 
         period_count += 1
         period_start += period_step
+
+    period_splits = {'period_splits': period_splits, 'tickers': tickers, 'seq_len': lag, 'pred_len': lead }
+
     return period_splits
 
 def save_data(data, filename):
@@ -316,17 +328,17 @@ if __name__ == "__main__":
     with open('config.yaml', 'r') as f:
         params = yaml.safe_load(f)
 
-    train_params = params.get('train_params', {})
-    model_params = params.get('model_params', {})
-    tickers = model_params.get('tickers', ['GOOGL', 'AMZN'])  # Example tickers, adjust as needed
+    train_params = params.get('train_params')
+    model_params = params.get('model_params')
+    tickers = model_params.get('tickers')
     period_len = train_params.get('period_len')
     period_step = model_params.get('min_len_for_pred')
     lag = model_params.get('seq_len')
     lead = model_params.get('pred_len')
-    train_start_date = model_params.get('trained_period', {}).get('start')
-    train_end_date = model_params.get('trained_period', {}).get('end')
-    train_split = train_params.get('train_split', 0.75)
-    val_split = train_params.get('val_split', 0.125)
+    train_start_date = model_params.get('trained_period').get('start')
+    train_end_date = model_params.get('trained_period').get('end')
+    train_split = train_params.get('train_split')
+    val_split = train_params.get('val_split')
 
     print("Processing training data...")
     print(" ".join(tickers))
@@ -336,19 +348,28 @@ if __name__ == "__main__":
 
     # Create price and volume features
     data = create_features(data, tickers)
-    num_tickers = len(tickers)
 
     # Create period splits for training, validation, and test sets
-    period_splits = create_period_splits(data, num_tickers, period_len, period_step, lag, lead, train_split, val_split)
+    period_data = create_period_splits(data, tickers, period_len, period_step, lag, lead, train_split, val_split)
 
     # Print summary    
     print(f"Preprocessing completed successfully!")
-    print(f"Processed {num_tickers} tickers: {tickers}")
-    print(f"Created {len(period_splits)} period splits")
+    print(f"Processed {len(tickers)} tickers: {tickers}")
+    print(f"Created {len(period_data['period_splits'])} period splits")
     print(f"Saved data to 'period_splits.pkl'")
 
     # Save the period_splits dictionary to a file
-    save_data(period_splits, 'period_splits.pkl')
+    save_data(period_data, 'period_splits.pkl')
     data.to_csv('processed_data.csv', index=False)
 
-    del data, period_splits # Clean up memory
+    # Update config.yaml with new valid tickers
+    with open('config.yaml', 'r') as f:
+        config = yaml.safe_load(f)
+
+    config['model_params']['tickers'] = tickers
+
+    with open('config.yaml', 'w') as f:
+        yaml.safe_dump(config, f)
+
+    print("Updated config.yaml with valid tickers.")
+    

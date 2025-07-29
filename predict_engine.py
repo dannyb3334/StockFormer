@@ -30,6 +30,7 @@ class StockFormerPredictor:
         with open(self.config_path, 'r') as f:
             config = yaml.safe_load(f)
         self.model_params = config.get('model_params', {})
+        self.model_params['num_stocks'] = len(self.tickers)
 
     def _init_model(self):
         """
@@ -51,7 +52,6 @@ class StockFormerPredictor:
         X, T = create_predict_data(
             tickers=self.tickers,
             lag=self.lag,
-            lead=self.lead,
             standard_window=self.standard_window
         )
         # Only use the last sample for prediction
@@ -70,13 +70,13 @@ if __name__ == "__main__":
     with open('config.yaml', 'r') as f:
         config = yaml.safe_load(f)
 
-    model_path = config.get('model_path', 'stockformer_model.pth')
-    model_params = config.get('model_params', {})
+    model_path = config.get('model_path')
+    model_params = config.get('model_params')
     tickers = model_params.get('tickers')
     lag = model_params.get('seq_len')
     lead = model_params.get('pred_len')
     standard_window = model_params.get('min_len_for_pred')
-    lookahead = model_params.get('lookahead', 0)
+    lookahead = model_params.get('lookahead')
 
     # Example usage: initialize predictor and run prediction
     predictor = StockFormerPredictor(
