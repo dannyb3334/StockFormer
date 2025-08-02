@@ -6,6 +6,7 @@ import argparse
 import matplotlib.pyplot as plt
 import yaml
 from StockFormer import create_compiled_stockformer, output_to_raw_numpy, output_to_signals
+import os
 
 
 class StockFormerBacktester:
@@ -37,24 +38,27 @@ class StockFormerBacktester:
         Returns:
             None. Sets self.period_splits and initializes self.model.
         """
+        period_files = sorted([
+        os.path.join('training_periods', fname)
+        for fname in os.listdir('training_periods')
+            if fname.endswith('.pkl')
+        ])
+        data_file = period_files[-1]
+
         # Load period split data
-        with open(data_path, 'rb') as f:
+        with open(data_file, 'rb') as f:
             data = pickle.load(f)
 
-        self.period_splits = data.get('period_splits')
+        self.period_splits = data.get('data')
         self.tickers = data.get('tickers')
         self.seq_len = data.get('seq_len')
         self.pred_len = data.get('pred_len')
 
-        if not self.period_splits or not self.tickers:
-            raise ValueError("Missing period splits or tickers in data file.")
-
         self.num_stocks = len(self.tickers)
 
         # Get sample data to infer feature dimensions
-        first_period = next(iter(self.period_splits.values()))
-        train_X = first_period.get('training', {}).get('X')
-        train_Y = first_period.get('training', {}).get('Y')
+        train_X = self.period_splits.get('training', {}).get('X')
+        train_Y = self.period_splits.get('training', {}).get('Y')
 
         if train_X is None or train_Y is None or len(train_X) == 0:
             raise ValueError("Training data missing or empty in first period.")
@@ -68,7 +72,6 @@ class StockFormerBacktester:
             raise ValueError("Prediction length mismatch between config and data.")
 
         print(f"Data loaded:")
-        print(f"  Periods: {len(self.period_splits)}")
         print(f"  Sequence length: {self.seq_len}")
         print(f"  Number of stocks: {self.num_stocks}")
         print(f"  Number of features: {self.num_features}")
@@ -290,7 +293,7 @@ class StockFormerBacktester:
         print("Starting backtest...")
         results = []
         
-        period_idx, period_data = list(self.period_splits.items())[self.period_idx]
+        period_idx, period_data = 12, self.period_splits
         period_result = self.backtest_period(period_data, period_idx)
         if period_result is not None:
             results.append(period_result)

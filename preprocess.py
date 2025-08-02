@@ -1,3 +1,4 @@
+import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -259,7 +260,6 @@ def create_period_splits(data, tickers, seq_splits_length, period_step, lag, lea
     # Create rolling period splits
     period_start = 0
     period_count = 0
-    period_splits = {}
     num_tickers = len(tickers)
     period_step *= num_tickers
     seq_splits_length *= num_tickers
@@ -299,18 +299,20 @@ def create_period_splits(data, tickers, seq_splits_length, period_step, lag, lea
         training_size = int(len_Xs * train_split)
         val_test_size = int(len_Xs * val_split)
 
-        period_splits[period_count] = {
+        period_splits = {
             'training': { 'X': Xs[:training_size], 'Y': Ys[:training_size], 'Ts': Ts[:training_size] },
             'validation': { 'X': Xs[training_size:training_size + val_test_size], 'Y': Ys[training_size:training_size + val_test_size], 'Ts': Ts[training_size:training_size + val_test_size] },
             'test': { 'X': Xs[training_size + val_test_size:], 'Y': Ys[training_size + val_test_size:], 'Ts': Ts[training_size + val_test_size:] },
         }
 
+        export = {'data': period_splits, 'tickers': tickers, 'seq_len': lag, 'pred_len': lead }
+
+        save_data(export, os.path.join('training_periods', f'period_split_{period_count}.pkl'))
+
+        del export, period_splits, Xs, Ys, Ts, period_slice_values, grouped_by_date
+
         period_count += 1
         period_start += period_step
-
-    period_splits = {'period_splits': period_splits, 'tickers': tickers, 'seq_len': lag, 'pred_len': lead }
-
-    return period_splits
 
 def save_data(data, filename):
     """
@@ -350,17 +352,13 @@ if __name__ == "__main__":
     data = create_features(data, tickers)
 
     # Create period splits for training, validation, and test sets
-    period_data = create_period_splits(data, tickers, period_len, period_step, lag, lead, train_split, val_split)
+    create_period_splits(data, tickers, period_len, period_step, lag, lead, train_split, val_split)
 
     # Print summary    
     print(f"Preprocessing completed successfully!")
     print(f"Processed {len(tickers)} tickers: {tickers}")
-    print(f"Created {len(period_data['period_splits'])} period splits")
+    #print(f"Created {len(period_data['period_splits'])} period splits")
     print(f"Saved data to 'period_splits.pkl'")
-
-    # Save the period_splits dictionary to a file
-    save_data(period_data, 'period_splits.pkl')
-    data.to_csv('processed_data.csv', index=False)
 
     # Update config.yaml with new valid tickers
     with open('config.yaml', 'r') as f:

@@ -7,6 +7,7 @@ from StockFormer import create_compiled_stockformer
 import numpy as np
 import matplotlib.pyplot as plt
 import yaml
+import os
 
 
 def masked_mae(preds, labels, null_val=np.nan):
@@ -124,18 +125,19 @@ def train_period(period_data, model, optimizer, criterion, device, num_epochs, b
             end_idx = min(train_size, i + batch_size)
             
             # Convert batch to tensors
-            x_batch = torch.tensor(X_train_shuffled[i:end_idx], dtype=torch.float32).to(device)
-            y_reg_batch = torch.tensor(Y_train_shuffled[i:end_idx][..., 0], dtype=torch.float32).to(device)
+            x_batch = torch.tensor(X_train_shuffled[i:end_idx], dtype=torch.float16).to(device)
+            y_reg_batch = torch.tensor(Y_train_shuffled[i:end_idx][..., 0], dtype=torch.float16).to(device)
             y_cla_batch = torch.tensor(Y_train_shuffled[i:end_idx][..., 1], dtype=torch.long).to(device)
-            ts_batch = torch.tensor(Ts_train_shuffled[i:end_idx], dtype=torch.float32).to(device)
+            ts_batch = torch.tensor(Ts_train_shuffled[i:end_idx], dtype=torch.float16).to(device)
 
             optimizer.zero_grad()
             
-            # Forward pass
-            out = model(x_batch, ts_batch)
+            with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+                # Forward pass
+                out = model(x_batch, ts_batch)
 
-            # Compute loss
-            loss = criterion(out, y_cla_batch, y_reg_batch)
+                # Compute loss
+                loss = criterion(out, y_cla_batch, y_reg_batch)
 
             # Backward pass
             loss.backward()
@@ -144,6 +146,7 @@ def train_period(period_data, model, optimizer, criterion, device, num_epochs, b
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
+            torch.cuda.empty_cache()
             
             epoch_loss += loss.item()
             num_batches += 1
@@ -236,7 +239,17 @@ def train_on_periods(periods_dataset, model, optimizer, criterion, device, num_e
     initial_wd = weight_decay
     base_patience = 15  # Define a base patience value
     
-    for period_idx, period_data in periods_dataset.items():
+    period_files = sorted([
+        os.path.join('training_periods', fname)
+        for fname in os.listdir('training_periods')
+        if fname.endswith('.pkl')
+    ])
+    for period_idx, period_file in enumerate(period_files):
+
+
+        with open(period_file, 'rb') as f:
+            period_data = pickle.load(f)['data']
+
         print(f"\nTraining on period {period_idx} with {len(period_data['training']['X'])} training samples and {len(period_data['validation']['X'])} validation samples")
         
         # Load best model from previous period (except for first period)
@@ -288,6 +301,8 @@ def train_on_periods(periods_dataset, model, optimizer, criterion, device, num_e
         # Pass scheduler to train_period (currently None)
         val_loss = train_period(period_data, model, optimizer, criterion, device, num_epochs, 
                                batch_size, base_patience, model_path, scheduler)
+        
+        del period_data  # Free memory after each period
 
 
 def main():
@@ -321,7 +336,7 @@ def main():
     pred_features = model_params.get('pred_features')
 
     # Load data
-    with open(data_path, 'rb') as f:
+    with open('training_periods/period_split_0.pkl', 'rb') as f:
         data = pickle.load(f)
 
     lag = data['seq_len']
@@ -331,7 +346,7 @@ def main():
         raise ValueError("Sequence length mismatch between config and data.")
     if lead != pred_len:
         raise ValueError("Prediction length mismatch between config and data.")
-    period_splits = data['period_splits']
+    #period_splits = data['period_splits']
     tickers = data['tickers']
     num_stocks = len(tickers)
 
@@ -352,14 +367,14 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     criterion = MultiSupervisionLoss(cla_loss_weight)
 
-    print(f"Starting training on {len(period_splits)} periods...")
+    #print(f"Starting training on {len(period_splits)} periods...")
     print(f"Using device: {device}")
     print(f"Reset optimizer between periods: {reset_optimizer}")
     print(f"Learning rate: {learning_rate}")
     print(f"Weight decay: {weight_decay}")
 
     # Train sequentially on periods dataset
-    train_on_periods(period_splits, model, optimizer, criterion, device,
+    train_on_periods(None, model, optimizer, criterion, device,
                     epochs, batch_size, model_path, reset_optimizer, weight_decay)
 
     # Save final model along with config

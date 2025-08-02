@@ -13,11 +13,97 @@ model_params:
   pred_len: 2
   seq_len: 20
   tickers:
-  - GOOGL
+  - AAPL
+  - AMAT
+  - AMGN
+  - CMCSA
+  - INTC
+  - KLAC
+  - PCAR
+  - CTAS
+  - PAYX
+  - LRCX
+  - ADSK
+  - ROST
+  - MNST
+  - MSFT
+  - ADBE
+  - FAST
+  - EA
+  - CSCO
+  - REGN
+  - IDXX
+  - VRTX
+  - BIIB
+  - ODFL
+  - QCOM
+  - GILD
+  - SNPS
+  - SBUX
+  - INTU
+  - MCHP
+  - ORLY
+  - COST
+  - CPRT
+  - ASML
+  - TTWO
   - AMZN
+  - MSTR
+  - CTSH
+  - CSGP
+  - NVDA
+  - BKNG
+  - 'ON'
+  - ISRG
+  - MRVL
+  - ADI
+  - AEP
+  - AMD
+  - ADP
+  - AZN
+  - CDNS
+  - CSX
+  - HON
+  - MAR
+  - MU
+  - XEL
+  - EXC
+  - PEP
+  - ROP
+  - TXN
+  - AXON
+  - MDLZ
+  - NFLX
+  - GOOGL
+  - DXCM
+  - TMUS
+  - LULU
+  - MELI
+  - KDP
+  - AVGO
+  - VRSK
+  - FTNT
+  - CHTR
+  - TSLA
+  - NXPI
+  - FANG
+  - META
+  - PANW
+  - WDAY
+  - CDW
+  - GOOG
+  - PYPL
+  - SHOP
+  - KHC
+  - TEAM
+  - CCEP
+  - TTD
+  - BKR
+  - WBD
+  - LIN
   trained_period:
     end: '2025-01-01'
-    start: '2021-10-01'
+    start: '2018-01-01'
 model_path: stockformer_model.pth
 train_params:
   batch_size: 1024
