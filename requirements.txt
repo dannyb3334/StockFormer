@@ -1,0 +1,9 @@
+yfinance==0.2.65
+pandas==2.3.1
+numpy==2.2.6
+statsmodels==0.14.5
+pyyaml==6.0.2
+tqdm==4.67.1
+torch==2.7.1 #+cu126
+PyWavelets==1.8.0
+matplotlib==3.10.5

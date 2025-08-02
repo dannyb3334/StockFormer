@@ -69,6 +69,12 @@ StockFormer Model:
 
 ### Usage Pipeline
 
+Before you begin, install the required dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
 1. **Data Preprocessing**
    ```bash
    python preprocess.py
