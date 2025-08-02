@@ -221,6 +221,12 @@ def train_period(period_data, model, optimizer, criterion, device, num_epochs, b
         model.load_state_dict(best_model_state)
         print(f"Loaded best model with validation loss: {best_val_loss:.4f}")
 
+    # Clean up training data
+    del X_train, Y_train, Ts_train, X_val, Y_val, Ts_val
+    if 'X_train_shuffled' in locals():
+        del X_train_shuffled, Y_train_shuffled, Ts_train_shuffled
+    torch.cuda.empty_cache()
+
     if show_plot:
         plt.ioff()
         plt.close(fig)
@@ -242,14 +248,17 @@ def train_on_periods(periods_dataset, model, optimizer, criterion, device, num_e
         for fname in os.listdir('training_periods')
         if fname.endswith('.pkl')
     ])
+    import time
     for period_idx, period_file in enumerate(period_files):
 
 
         with open(period_file, 'rb') as f:
             period_data = pickle.load(f)['data']
 
+        print(len(period_data['training']['X']), len(period_data['validation']['X']))
+
         print(f"\nTraining on period {period_idx} with {len(period_data['training']['X'])} training samples and {len(period_data['validation']['X'])} validation samples")
-        
+        start = time.time()
         # Load best model from previous period (except for first period)
         if period_idx > 0:
             try:
@@ -300,9 +309,8 @@ def train_on_periods(periods_dataset, model, optimizer, criterion, device, num_e
         val_loss = train_period(period_data, model, optimizer, criterion, device, num_epochs, 
                                batch_size, base_patience, model_path, scheduler)
         
-        del period_data  # Free memory after each period
-
-
+        print("#####################Period training completed in {:.2f} seconds".format(time.time() - start))
+        
 def main():
 
     # Load config from YAML file
