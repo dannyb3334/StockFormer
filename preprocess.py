@@ -330,6 +330,9 @@ if __name__ == "__main__":
     with open('config.yaml', 'r') as f:
         params = yaml.safe_load(f)
 
+    # Create 'training_periods' directory if it does not exist
+    os.makedirs('training_periods', exist_ok=True)
+
     train_params = params.get('train_params')
     model_params = params.get('model_params')
     tickers = model_params.get('tickers')

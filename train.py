@@ -61,7 +61,7 @@ class MultiSupervisionLoss(nn.Module):
 
 
 def train_period(period_data, model, optimizer, criterion, device, num_epochs, batch_size, 
-                patience, model_path='stockformer_model.pth', scheduler=None, show_plot=True):
+                patience, model_path='stockformer_model.pth', scheduler=None, show_plot=False):
     """
     Train model on a single period with early stopping and live loss plotting.
     """
@@ -125,19 +125,18 @@ def train_period(period_data, model, optimizer, criterion, device, num_epochs, b
             end_idx = min(train_size, i + batch_size)
             
             # Convert batch to tensors
-            x_batch = torch.tensor(X_train_shuffled[i:end_idx], dtype=torch.float16).to(device)
-            y_reg_batch = torch.tensor(Y_train_shuffled[i:end_idx][..., 0], dtype=torch.float16).to(device)
+            x_batch = torch.tensor(X_train_shuffled[i:end_idx], dtype=torch.float32).to(device)
+            y_reg_batch = torch.tensor(Y_train_shuffled[i:end_idx][..., 0], dtype=torch.float32).to(device)
             y_cla_batch = torch.tensor(Y_train_shuffled[i:end_idx][..., 1], dtype=torch.long).to(device)
-            ts_batch = torch.tensor(Ts_train_shuffled[i:end_idx], dtype=torch.float16).to(device)
+            ts_batch = torch.tensor(Ts_train_shuffled[i:end_idx], dtype=torch.float32).to(device)
 
             optimizer.zero_grad()
             
-            with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-                # Forward pass
-                out = model(x_batch, ts_batch)
+            # Forward pass
+            out = model(x_batch, ts_batch)
 
-                # Compute loss
-                loss = criterion(out, y_cla_batch, y_reg_batch)
+            # Compute loss
+            loss = criterion(out, y_cla_batch, y_reg_batch)
 
             # Backward pass
             loss.backward()
@@ -146,7 +145,6 @@ def train_period(period_data, model, optimizer, criterion, device, num_epochs, b
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
-            torch.cuda.empty_cache()
             
             epoch_loss += loss.item()
             num_batches += 1

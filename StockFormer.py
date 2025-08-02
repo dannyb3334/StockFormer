@@ -464,6 +464,7 @@ def create_compiled_stockformer(device='cuda', **kwargs):
     """
     torch.set_float32_matmul_precision("high")
     model = StockFormer(**kwargs)
+    model = nn.DataParallel(model)  # Use DataParallel for multi-GPU support
     model = torch.compile(model, mode='default')
     model.to(device)
     return model
